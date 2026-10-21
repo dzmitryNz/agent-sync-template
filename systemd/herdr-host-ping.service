@@ -1,0 +1,7 @@
+[Unit]
+Description=herdr status on other hosts -> ~/.cache/herdr-hosts/<host>.status
+
+[Service]
+Type=oneshot
+TimeoutStartSec=180
+ExecStart=%h/.claude/hooks/herdr-host-ping.sh --all

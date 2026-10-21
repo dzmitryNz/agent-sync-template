@@ -1,0 +1,11 @@
+[Unit]
+Description=tailcat serve — SSH channel of this host through DERP, no incoming port and no Tailscale control plane
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/tailcat serve --key=%H --ssh-authorized-keys=%h/.ssh/authorized_keys ssh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,1 @@
+^/agent-(review|developer|devops|qa|logs|db|cleaner)\b|^[Yy]ou are agent-|^\[(REVIEW|DEV|DEVOPS|QA|LOGS|DB|CLEANER) REQUEST\]

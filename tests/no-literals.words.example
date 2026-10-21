@@ -1,0 +1,14 @@
+# Copy to tests/no-literals.words (gitignored) and list what must never appear in the template.
+# One entry per line; entries are case-insensitive extended regexes joined with "|".
+# Put here:
+#   - the company and product names of the project you extracted the template from
+#   - your GitHub login, your surname, the ssh alias of your server (e.g. "myserver:")
+#   - account ids: ClickUp/Jira workspace id, doc ids, Sentry org slug
+#   - prefixes of your LAN and tailnet hostnames
+# Example entries (made up):
+acme-inc
+acmecorp
+jdoe
+johndoe
+homebox:
+12345678

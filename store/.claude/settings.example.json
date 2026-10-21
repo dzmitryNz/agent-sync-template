@@ -1,0 +1,57 @@
+{
+  "_comment": "optional personal preferences; merge by hand",
+  "skillOverrides": {
+    "anthropic-skills:docx": "",
+    "anthropic-skills:import-memory": "",
+    "anthropic-skills:morning": "",
+    "anthropic-skills:pdf": "",
+    "anthropic-skills:pptx": "",
+    "anthropic-skills:xlsx": ""
+  },
+  "enabledPlugins": {
+    "context7@claude-plugins-official": false,
+    "revdiff@revdiff": false
+  },
+  "extraKnownMarketplaces": {
+    "revdiff": {
+      "source": {
+        "source": "",
+        "repo": ""
+      }
+    }
+  },
+  "promptCacheTtl": "",
+  "effortLevel": "",
+  "modelSettings": {
+    "claude-opus-5": {
+      "effortLevel": ""
+    },
+    "claude-opus-5-5": {
+      "effortLevel": ""
+    },
+    "claude-sonnet-5": {
+      "effortLevel": ""
+    },
+    "claude-sonnet-5-5": {
+      "effortLevel": ""
+    }
+  },
+  "autoCompactEnabled": false,
+  "autoCompactWindow": 0,
+  "dialogExpiry": "",
+  "pluginConfigs": {
+    "agents-md@builtin": {
+      "options": {
+        "instructionFiles": ""
+      }
+    }
+  },
+  "tui": "",
+  "timeFormat": "",
+  "theme": "",
+  "editorMode": "",
+  "autoContinueAtUsageLimit": false,
+  "remoteControlAtStartup": false,
+  "crossSessionInbound": "",
+  "agentPushNotifEnabled": false
+}

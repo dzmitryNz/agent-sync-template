@@ -1,0 +1,20 @@
+# Credentials never go into git: they stay in history in every clone forever.
+# Keep them in $PROJECT_CREDS_DIR (outside this repo) and copy directly between machines.
+
+# Python caches from the skill scripts
+__pycache__/
+*.pyc
+
+# Local deny list for tests/no-literals.sh (see no-literals.words.example)
+tests/no-literals.words
+
+# Home IP allow-list for geo-guard. Not a secret by itself, but it is this machine.
+/geo-allowed-ips
+
+# Machine paths and session prompt text. Copy agent-sync.env by hand, or run init
+# again with the same flags. Do not commit the session registry.
+/agent-sync.env
+/.link-adopt-pending
+/.link-adopt
+/sessions/**
+!/sessions/.gitkeep

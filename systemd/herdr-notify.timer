@@ -1,0 +1,10 @@
+[Unit]
+Description=Check herdr agents waiting for a reply once per minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

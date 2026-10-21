@@ -1,0 +1,7 @@
+[Unit]
+Description=Telegram alert when a herdr agent waits for a reply over 10 minutes
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.agent-sync/bin/herdr-notify.sh

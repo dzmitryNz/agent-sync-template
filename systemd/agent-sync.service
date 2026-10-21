@@ -1,0 +1,11 @@
+[Unit]
+Description=Scheduled sync of agent configs
+
+[Service]
+Type=oneshot
+TimeoutStartSec=180
+ExecStart=%h/.agent-sync/bin/agent-sync.sh sync
+Environment=DISPLAY=:0
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Nice=19
+IOSchedulingClass=idle

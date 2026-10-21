@@ -1,0 +1,497 @@
+#!/usr/bin/env bash
+# standctl — task-stand supervisor (agent-devops).
+# Lives in ~/.claude/skills/agent-devops/ (synced via agent-sync).
+# Project-specific parts (services, ports, DB modes, extras) live in stand-project.sh next to this file;
+# see stand-project.example.sh for the contract and a full example.
+set -euo pipefail
+
+# Resolve through ~/.local/bin/standctl (or any) symlink to the real skill dir.
+SKILL_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+STARTER="${SKILL_DIR}/start-svc.mjs"
+PROFILES_DIR="${SKILL_DIR}/profiles"
+
+die() { printf 'standctl: %s\n' "$*" >&2; exit 1; }
+info() { printf 'standctl: %s\n' "$*"; }
+
+. "${SKILL_DIR}/../../../../bin/lib/project-env.sh" 2>/dev/null || . "$HOME/.agent-sync/bin/lib/project-env.sh"
+[ -d "$PROJECT_ROOT" ] || die "PROJECT_ROOT=$PROJECT_ROOT not found (set it in ~/.agent-sync/agent-sync.env)"
+STAND_PROJECT="${SKILL_DIR}/stand-project.sh"
+[ -f "$STAND_PROJECT" ] || die "missing $STAND_PROJECT — copy stand-project.example.sh and edit it for your stack"
+STAND_DIR="${PROJECT_ROOT}/.stand"
+STATE="${STAND_DIR}/current.json"
+EXTRAS_DIR="${STAND_DIR}/extras"
+mkdir -p "$STAND_DIR" "$EXTRAS_DIR" 2>/dev/null || true
+# shellcheck disable=SC1090
+. "$STAND_PROJECT"
+
+# Prefer nvm node if present, keep system tools.
+clean_path() {
+  local nvm_bin="" ver
+  if [ -d "$HOME/.nvm/versions/node" ]; then
+    ver="$(ls "$HOME/.nvm/versions/node" 2>/dev/null | tail -1)"
+    [ -n "$ver" ] && nvm_bin="$HOME/.nvm/versions/node/${ver}/bin"
+  fi
+  printf '%s' "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin${nvm_bin:+:$nvm_bin}:$HOME/.local/bin"
+}
+export PATH="$(clean_path)"
+
+need_cmds() {
+  local c
+  for c in jq node curl ss; do
+    command -v "$c" >/dev/null 2>&1 || die "missing command: $c"
+  done
+  [ -f "$STARTER" ] || die "missing starter: $STARTER (agent-sync pull?)"
+}
+
+tcp_ok() {
+  local host="$1" port="$2"
+  timeout 2 bash -c "echo >/dev/tcp/${host}/${port}" 2>/dev/null
+}
+
+port_listener_pid() {
+  local port="$1"
+  ss -ltnp 2>/dev/null | sed -n "s/.*:${port} .*pid=\\([0-9]*\\).*/\\1/p" | head -1
+}
+
+http_code() {
+  local url="$1"
+  curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null || echo 000
+}
+
+pid_alive() {
+  local pid="$1"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+pid_cwd() {
+  readlink "/proc/$1/cwd" 2>/dev/null || true
+}
+
+env_from_pid() {
+  local pid="$1" key="$2"
+  tr '\0' '\n' <"/proc/${pid}/environ" 2>/dev/null | sed -n "s/^${key}=//p" | head -1
+}
+
+check_devops_space() {
+  if [ "${STANDCTL_SKIP_SPACE:-}" = 1 ]; then
+    info "space check skipped (STANDCTL_SKIP_SPACE=1)"
+    return 0
+  fi
+  if [ "${HERDR_ENV:-}" != 1 ] || ! command -v herdr >/dev/null 2>&1; then
+    info "herdr not in this shell — space check skipped (agent must verify DevOps label)"
+    return 0
+  fi
+  local labels
+  labels="$(herdr workspace list 2>/dev/null | jq -r '.result.workspaces[].label' 2>/dev/null || true)"
+  if ! printf '%s\n' "$labels" | grep -qx 'DevOps' && ! printf '%s\n' "$labels" | grep -qE '^DevOps-'; then
+    die "BLOCKED no-space: no herdr label DevOps on this host (Deploy ≠ stand). Create/rename a DevOps space."
+  fi
+}
+
+cmd_preflight() {
+  need_cmds
+  local db_mode="$STAND_DEFAULT_DB" profile="$STAND_DEFAULT_PROFILE"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --db) db_mode="$2"; shift 2 ;;
+      --profile) profile="$2"; shift 2 ;;
+      *) die "preflight: unknown arg $1" ;;
+    esac
+  done
+  check_devops_space
+
+  local host port
+  host="$(db_expect_host "$db_mode")"
+  port="$(db_expect_port "$db_mode")"
+  if tcp_ok "$host" "$port"; then
+    info "DB ${db_mode}: ${host}:${port} OK"
+  else
+    die "BLOCKED: DB ${db_mode} ${host}:${port} unreachable (a tunnel mode needs the SSH tunnel up — start it, then retry)"
+  fi
+
+  stand_preflight_extra "$db_mode" "$profile"
+
+  # inotify / ENOSPC soft check
+  local watches
+  watches="$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)"
+  info "inotify max_user_watches=${watches} (do not use file watchers)"
+
+  if [ -z "${NPM_TOKEN:-}" ] && [ ! -f "$HOME/.npmrc" ]; then
+    info "WARN: NPM_TOKEN/.npmrc not obvious — npm ci for private pkgs may fail"
+  fi
+
+  info "PROJECT_ROOT=${PROJECT_ROOT}"
+  info "STARTER=${STARTER}"
+  info "preflight OK (db=${db_mode} profile=${profile})"
+}
+
+write_state() {
+  local db_mode="$1" task="$2" json_services="$3"
+  jq -n \
+    --arg db "$db_mode" \
+    --arg task "$task" \
+    --arg root "$PROJECT_ROOT" \
+    --argjson services "$json_services" \
+    '{db:$db, task:$task, project_root:$root, updated_at:(now|todate), services:$services}' >"$STATE"
+  info "wrote ${STATE}"
+}
+
+load_state() {
+  [ -f "$STATE" ] || die "no state at ${STATE} — run standctl up first"
+  migrate_state_service_keys
+}
+
+svc_spec_from_state() {
+  local name="$1"
+  jq -c --arg n "$name" '.services[$n] // empty' "$STATE"
+}
+
+build_service_json() {
+  local name="$1" dir="$2" db_mode="$3"
+  local defs port health kind extras pidfile
+  name="$(canonical_svc_name "$name")"
+  defs="$(svc_defaults "$name")"
+  port="${defs%%|*}"
+  rest="${defs#*|}"
+  health="${rest%%|*}"
+  rest="${rest#*|}"
+  kind="${rest%%|*}"
+  extras="${rest#*|}"
+  mkdir -p "${dir}/logs"
+  pidfile="${dir}/logs/${name}.pid"
+  jq -n \
+    --arg dir "$dir" \
+    --argjson port "$port" \
+    --arg health "$health" \
+    --arg kind "$kind" \
+    --arg pidfile "$pidfile" \
+    --arg extras "$extras" \
+    '{dir:$dir, port:($port|tonumber), health:$health, kind:$kind, pidfile:$pidfile, extras:($extras|split(",")|map(select(length>0)))}'
+}
+
+safe_stop_svc() {
+  local name="$1"
+  local spec dir port pidfile pid lp cwd match
+  spec="$(svc_spec_from_state "$name")"
+  [ -n "$spec" ] || die "service ${name} not in current.json"
+  dir="$(jq -r .dir <<<"$spec")"
+  port="$(jq -r .port <<<"$spec")"
+  pidfile="$(jq -r .pidfile <<<"$spec")"
+
+  if [ -f "$pidfile" ]; then
+    pid="$(tr -d ' \n' <"$pidfile")"
+    if pid_alive "$pid"; then
+      cwd="$(pid_cwd "$pid")"
+      case "$cwd" in
+        "$dir"|"$dir"/*)
+          info "stop ${name}: pidfile pid=${pid} cwd=${cwd}"
+          kill -TERM "$pid" 2>/dev/null || true
+          ;;
+        *)
+          die "REFUSE stop ${name}: pidfile pid=${pid} cwd=${cwd} != ${dir}"
+          ;;
+      esac
+    else
+      info "stop ${name}: stale pidfile ${pid}"
+      rm -f "$pidfile"
+    fi
+  fi
+
+  # listener leftover with matching cwd
+  sleep 1
+  lp="$(port_listener_pid "$port")"
+  if [ -n "$lp" ]; then
+    cwd="$(pid_cwd "$lp")"
+    case "$cwd" in
+      "$dir"|"$dir"/*)
+        info "stop ${name}: listener pid=${lp} on :${port}"
+        kill -TERM "$lp" 2>/dev/null || true
+        local pp
+        pp="$(ps -o ppid= -p "$lp" 2>/dev/null | tr -d ' ' || true)"
+        if [ -n "${pp:-}" ] && [ "$pp" != 1 ]; then
+          local pargs
+          pargs="$(ps -o args= -p "$pp" 2>/dev/null || true)"
+          case "$pargs" in *tsx*|*npx*|*npm*|*vite*|sh\ -c*) kill -TERM "$pp" 2>/dev/null || true ;; esac
+        fi
+        ;;
+      *)
+        die "BLOCKED :${port} held by foreign pid=${lp} cwd=${cwd} — not killing"
+        ;;
+    esac
+  fi
+
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    [ -z "$(port_listener_pid "$port")" ] && break
+    sleep 1
+  done
+  [ -z "$(port_listener_pid "$port")" ] || die "port :${port} still busy after stop ${name}"
+  rm -f "$pidfile"
+  info "stopped ${name}"
+}
+
+start_node_svc() {
+  local name="$1" db_mode="$2"
+  local spec dir log pidfile extras_csv
+  spec="$(svc_spec_from_state "$name")"
+  dir="$(jq -r .dir <<<"$spec")"
+  pidfile="$(jq -r .pidfile <<<"$spec")"
+  log="${dir}/logs/app.log"
+  extras_csv="$(jq -r '.extras|join(",")' <<<"$spec")"
+  mkdir -p "${dir}/logs"
+  ensure_extras "$db_mode"
+  local files=()
+  mapfile -t files < <(extra_files_for "$extras_csv" "$db_mode")
+  if [ -s "${EXTRAS_DIR}/db-overlay.env" ]; then
+    files+=("${EXTRAS_DIR}/db-overlay.env")
+  fi
+  local more=()
+  mapfile -t more < <(stand_service_extra_files "$name")
+  [ ${#more[@]} -eq 0 ] || files+=("${more[@]}")
+  info "start ${name}: node ${STARTER} ${dir}"
+  if [ ${#files[@]} -gt 0 ]; then
+    node "$STARTER" "$dir" "$log" "$pidfile" "${files[@]}"
+  else
+    node "$STARTER" "$dir" "$log" "$pidfile"
+  fi
+}
+
+start_frontend() {
+  local name=frontend
+  local spec dir pidfile port
+  spec="$(svc_spec_from_state "$name")"
+  port="$(jq -r .port <<<"$spec")"
+  dir="$(jq -r .dir <<<"$spec")"
+  pidfile="$(jq -r .pidfile <<<"$spec")"
+  mkdir -p "${dir}/logs"
+  info "build frontend in ${dir}"
+  (cd "$dir" && npm run build >logs/build.log 2>&1) || die "frontend build failed — see ${dir}/logs/build.log"
+  (
+    cd "$dir"
+    setsid nohup npx vite preview --host 127.0.0.1 --port "$port" --strictPort >logs/preview.log 2>&1 &
+    echo $! >"$pidfile"
+  )
+  info "frontend pid=$(cat "$pidfile")"
+}
+
+verify_svc() {
+  local name="$1" db_mode="$2" wait_s="${3:-40}"
+  local spec port health kind dir pidfile url code i lp host_got expect
+  spec="$(svc_spec_from_state "$name")"
+  port="$(jq -r .port <<<"$spec")"
+  health="$(jq -r .health <<<"$spec")"
+  kind="$(jq -r .kind <<<"$spec")"
+  dir="$(jq -r .dir <<<"$spec")"
+  pidfile="$(jq -r .pidfile <<<"$spec")"
+  url="http://127.0.0.1:${port}${health}"
+  expect="$(db_expect_host "$db_mode")"
+
+  for i in $(seq 1 "$wait_s"); do
+    code="$(http_code "$url")"
+    [ "$code" = 200 ] && break
+    sleep 1
+  done
+  [ "$code" = 200 ] || die "${name}: health ${url} -> ${code} (not ready)"
+
+  lp="$(port_listener_pid "$port")"
+  [ -n "$lp" ] || die "${name}: no listener on :${port}"
+  cwd="$(pid_cwd "$lp")"
+  case "$cwd" in
+    "$dir"|"$dir"/*) ;;
+    *) die "${name}: listener cwd ${cwd} != ${dir}" ;;
+  esac
+
+  if [ "$kind" = node ]; then
+    stand_verify_env "$name" "$lp" "$db_mode" "$expect"
+  else
+    info "${name}: OK health=200 (vite-preview)"
+  fi
+}
+
+port_policy_before_start() {
+  # return 0 = need start/restart; return 1 = already healthy skip
+  local name="$1" dir="$2" port="$3"
+  local lp cwd code defs health
+  lp="$(port_listener_pid "$port")"
+  [ -z "$lp" ] && return 0
+  cwd="$(pid_cwd "$lp")"
+  defs="$(svc_defaults "$name")"
+  health="$(echo "$defs" | cut -d'|' -f2)"
+  case "$cwd" in
+    "$dir"|"$dir"/*)
+      code="$(http_code "http://127.0.0.1:${port}${health}")"
+      if [ "$code" = 200 ]; then
+        info "${name}: already up on :${port} (cwd match) — skip"
+        return 1
+      fi
+      info "${name}: ours but unhealthy — will restart"
+      return 0
+      ;;
+    *)
+      die "BLOCKED :${port} foreign pid=${lp} cwd=${cwd} — not killing"
+      ;;
+  esac
+}
+
+cmd_up() {
+  need_cmds
+  local db_mode="$STAND_DEFAULT_DB" profile="$STAND_DEFAULT_PROFILE" task="" 
+  declare -A SVC_DIR=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --db) db_mode="$2"; shift 2 ;;
+      --profile) profile="$2"; shift 2 ;;
+      --task) task="$2"; shift 2 ;;
+      --svc)
+        # name=dir
+        local pair="$2" n d
+        n="${pair%%=*}"; d="${pair#*=}"
+        [ -n "$n" ] && [ -n "$d" ] && [ "$n" != "$d" ] || die "--svc name=/abs/dir"
+        n="$(canonical_svc_name "$n")"
+        SVC_DIR["$n"]="$d"
+        shift 2
+        ;;
+      *) die "up: unknown arg $1" ;;
+    esac
+  done
+  cmd_preflight --db "$db_mode" --profile "$profile"
+
+  local names services_json="{}"
+  names="$(profile_services "$profile")"
+  # also include any --svc overrides not in profile
+  local n
+  for n in "${!SVC_DIR[@]}"; do
+    case " $names " in *" $n "*) ;; *) names="$names $n" ;; esac
+  done
+
+  local svc dir spec
+  for svc in $names; do
+    svc="$(canonical_svc_name "$svc")"
+    dir="${SVC_DIR[$svc]:-$(default_dir_for "$svc")}"
+    [ -d "$dir" ] || die "missing dir for ${svc}: ${dir}"
+    spec="$(build_service_json "$svc" "$dir" "$db_mode")"
+    services_json="$(jq --arg n "$svc" --argjson s "$spec" '. + {($n): $s}' <<<"$services_json")"
+  done
+  write_state "$db_mode" "$task" "$services_json"
+  ensure_extras "$db_mode"
+
+  for svc in $names; do
+    svc="$(canonical_svc_name "$svc")"
+    dir="$(jq -r --arg n "$svc" '.services[$n].dir' "$STATE")"
+    port="$(jq -r --arg n "$svc" '.services[$n].port' "$STATE")"
+    kind="$(jq -r --arg n "$svc" '.services[$n].kind' "$STATE")"
+    if port_policy_before_start "$svc" "$dir" "$port"; then
+      :
+    else
+      continue # skip — already healthy
+    fi
+    # if port busy with ours unhealthy — stop first
+    if [ -n "$(port_listener_pid "$port")" ]; then
+      safe_stop_svc "$svc"
+    fi
+    if [ "$kind" = vite-preview ]; then
+      start_frontend
+    else
+      start_node_svc "$svc" "$db_mode"
+    fi
+    verify_svc "$svc" "$db_mode" 45
+  done
+  cmd_status
+}
+
+cmd_restart() {
+  need_cmds
+  load_state
+  local db_mode
+  db_mode="$(jq -r .db "$STATE")"
+  [ $# -ge 1 ] || die "restart: need service names"
+  local svc kind
+  for svc in "$@"; do
+    svc="$(canonical_svc_name "$svc")"
+    [ -n "$(svc_spec_from_state "$svc")" ] || die "unknown service in state: $svc"
+    safe_stop_svc "$svc"
+    kind="$(jq -r --arg n "$svc" '.services[$n].kind' "$STATE")"
+    if [ "$kind" = vite-preview ]; then
+      start_frontend
+    else
+      start_node_svc "$svc" "$db_mode"
+    fi
+    verify_svc "$svc" "$db_mode" 45
+  done
+  cmd_status
+}
+
+cmd_stop() {
+  need_cmds
+  load_state
+  local targets=("$@")
+  if [ ${#targets[@]} -eq 0 ] || [ "${targets[0]}" = all-mine ]; then
+    mapfile -t targets < <(jq -r '.services|keys[]' "$STATE")
+  fi
+  local svc
+  for svc in "${targets[@]}"; do
+    safe_stop_svc "$(canonical_svc_name "$svc")" || true
+  done
+}
+
+cmd_status() {
+  need_cmds
+  migrate_state_service_keys
+  if [ ! -f "$STATE" ]; then
+    info "no ${STATE}"
+    # still show ports
+  else
+    info "state db=$(jq -r .db "$STATE") task=$(jq -r .task "$STATE") root=$(jq -r .project_root "$STATE")"
+  fi
+  local name port health url code lp cwd dbh
+  if [ -f "$STATE" ]; then
+    while IFS= read -r name; do
+      port="$(jq -r --arg n "$name" '.services[$n].port' "$STATE")"
+      health="$(jq -r --arg n "$name" '.services[$n].health' "$STATE")"
+      url="http://127.0.0.1:${port}${health}"
+      code="$(http_code "$url")"
+      lp="$(port_listener_pid "$port")"
+      cwd="$(pid_cwd "${lp:-}")"
+      dbh="$(stand_status_dbhost "${lp:-}")"
+      printf '  %-24s :%-4s health=%s pid=%s db=%s cwd=%s\n' \
+        "$name" "$port" "$code" "${lp:--}" "${dbh:--}" "${cwd:--}"
+    done < <(jq -r '.services|keys[]' "$STATE")
+  else
+    for port in $STAND_STATUS_PORTS; do
+      lp="$(port_listener_pid "$port")"
+      printf '  :%-4s pid=%s cwd=%s\n' "$port" "${lp:--}" "$(pid_cwd "${lp:-}")"
+    done
+  fi
+}
+
+usage() {
+  cat <<EOF
+Usage: standctl <command> [args]
+
+  preflight [--db ${STAND_DB_MODES}] [--profile ${STAND_PROFILES}]
+  up        [--db …] [--profile …] [--task id] [--svc name=/abs/dir]…
+  restart   <svc…>
+  stop      [svc…|all-mine]
+  status
+
+State: ${PROJECT_ROOT}/.stand/current.json
+Starter: ${STARTER}
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  [ -n "$cmd" ] || { usage; exit 2; }
+  shift || true
+  case "$cmd" in
+    preflight) cmd_preflight "$@" ;;
+    up) cmd_up "$@" ;;
+    restart) cmd_restart "$@" ;;
+    stop) cmd_stop "$@" ;;
+    status) cmd_status "$@" ;;
+    -h|--help|help) usage ;;
+    *) die "unknown command: $cmd" ;;
+  esac
+}
+
+main "$@"

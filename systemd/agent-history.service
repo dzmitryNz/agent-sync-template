@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync of Claude session history through the home server
+
+[Service]
+Type=oneshot
+TimeoutStartSec=180
+ExecStart=%h/.agent-sync/bin/history-sync.sh
+Nice=19
+IOSchedulingClass=idle

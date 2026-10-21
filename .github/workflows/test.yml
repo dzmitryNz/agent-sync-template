@@ -1,0 +1,43 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: GNU tools and bash 4 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install bash coreutils gnu-sed findutils jq
+          p="$(brew --prefix)"
+          # the tests call GNU date/stat/touch themselves; the scripts find gnubin through compat.sh
+          for d in findutils gnu-sed coreutils; do echo "$p/opt/$d/libexec/gnubin" >> "$GITHUB_PATH"; done
+          echo "$p/bin" >> "$GITHUB_PATH"
+      - name: Tests
+        run: bash tests/all.sh
+      - name: Smoke test with /bin/bash 3.2 and a bare PATH (macOS)
+        if: runner.os == 'macOS'
+        run: bash .github/macos-smoke.sh
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (whole history)
+        run: |
+          v=8.30.1
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v$v/gitleaks_${v}_linux_x64.tar.gz" | tar xz gitleaks
+          ./gitleaks git . --no-banner --redact --exit-code 1

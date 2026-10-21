@@ -1,0 +1,258 @@
+{
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
+  },
+  "permissions": {
+    "allow": [
+      "mcp__codegraph__codegraph_search",
+      "mcp__codegraph__codegraph_context",
+      "mcp__codegraph__codegraph_callers",
+      "mcp__codegraph__codegraph_callees",
+      "mcp__codegraph__codegraph_impact",
+      "mcp__codegraph__codegraph_node",
+      "mcp__codegraph__codegraph_status"
+    ],
+    "deny": [
+      "Bash(git worktree remove *--force*)",
+      "Bash(git worktree remove *-f *)",
+      "Bash(git -C * worktree remove *--force*)",
+      "Bash(git -C * worktree remove *-f *)"
+    ],
+    "defaultMode": "default"
+  },
+  "model": "opus",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/plan-resume.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/herdr-pane-meta.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/session-record.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/geo-guard.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/herdr-pane-meta.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/session-record.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/limit-guard.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/context-guard.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/ondemand-guard.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/awake-hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/herdr-pane-meta.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/limit-wake-hook.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/awake-hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/herdr-pane-meta.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/limit-wake-hook.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/session-record.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/awake-hook.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/role-clear.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/herdr-pane-meta.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/session-record.sh",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/awake-hook.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/herdr-pane-meta.sh",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/project-block-primary-checkout-write.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/block-dangerous-rm.sh"
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/prevent-secret-commit.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/project-worktree-via-wt-new.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/project-worktree-via-wt-new.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.agent-sync/bin/session-record.sh",
+            "async": true
+          }
+        ]
+      }
+    ]
+  },
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Removing a git worktree with `git worktree remove <path>` (no --force/-f) and, right before it, `rm <worktree>/node_modules` when that node_modules is a symlink: git itself refuses to remove a dirty worktree, and unlinking a symlink does not touch its target"
+    ],
+    "soft_deny": [
+      "$defaults",
+      "Bash(mysql:*DROP*)",
+      "Bash(mysql:*DELETE*)"
+    ],
+    "environment": [
+      "### Org-wide",
+      "**Organization**: {{PROJECT_GIT_ORG}} (GitHub org)",
+      "**Cloud provider(s)**: None configured \u2014 edit this block for your stack",
+      "**Repository visibility**: private \u2014 assume every {{PROJECT_GIT_ORG}}/* repo is private",
+      "**Source control**: {{PROJECT_ROOT}} may be a folder of independent checkouts (each subdirectory has its own origin at github.com/{{PROJECT_GIT_ORG}}/<name>) or a single repo",
+      "**Default / protected branches**: `{{PROJECT_BASE_BRANCH}}` is the default branch and the PR target; never push to release/production branches directly",
+      "**Internal sharing / snippet hosting**: None configured \u2014 treat public paste/gist services as outside the trust boundary",
+      "**Secrets management**: None configured \u2014 credentials live in gitignored .env* files and in {{PROJECT_CREDS_DIR}}",
+      "**CI/CD deploy targets**: None configured",
+      "**Network posture**: None configured \u2014 edit this block for your stack",
+      "**Trusted internal domains**: None configured",
+      "**Trusted cloud buckets**: None configured",
+      "**Key internal services**: None configured",
+      "**Internal package registry**: None configured \u2014 edit this block for your stack",
+      "**Sensitive data locations & audiences**: .env and related environment files across the checkouts under {{PROJECT_ROOT}}, plus everything in {{PROJECT_CREDS_DIR}} \u2014 treat as credentials/secrets, share only with audiences cleared at the named+specifics bar; .env.staging / .env.develop are non-prod but still credential stores",
+      "**Data retention / declassification**: None configured",
+      "**Sensitive remote targets**: None configured \u2014 edit this block for your stack",
+      "**Protected deployment namespaces / environments**: None configured \u2014 fall back to the Sensitive remote targets heuristic",
+      "**Protected IaC scopes**: IAM, RBAC, networking, quota, and node-pool resources; anything whose name or tag carries `prod` or `production` as a whole word or name segment",
+      "### User-specific",
+      "**Primary use of Claude Code**: software development",
+      "**Trusted repo**: {{PROJECT_ROOT}}",
+      "**Org-specific CLIs**: ralphex, herdr",
+      "routine under {{PROJECT_ROOT}}/ prefix: file reads/edits, local build, local console, and npx-based tooling"
+    ]
+  }
+}

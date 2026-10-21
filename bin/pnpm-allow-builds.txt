@@ -1,0 +1,17 @@
+# Packages for the pnpm allowBuilds list that wt-install generates.
+# pkg: postinstall allowed; !pkg: explicitly denied (otherwise pnpm 12 fails with ERR_PNPM_IGNORED_BUILDS).
+# New package: add it after ERR_PNPM_IGNORED_BUILDS, once you check what its script does.
+@swc/core
+esbuild
+unrs-resolver
+bcrypt
+sharp
+node-sass
+nuxt
+# hooks are already installed in the shared .git/hooks of the main checkout
+!simple-git-hooks
+# postinstall only prints ads / asks for donations
+!nodemon
+!core-js
+# macOS only
+!fsevents
