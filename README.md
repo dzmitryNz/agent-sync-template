@@ -70,6 +70,23 @@ Each plist keeps the `PATH` of the shell that ran `timers enable`. After a tool 
 
 **Several machines.** Session resume finds transcripts by the absolute `PROJECT_ROOT`. macOS homes are `/Users/<you>`, Linux and WSL homes are `/home/<you>`. Config sync works between them, but resume works only between machines with the same `PROJECT_ROOT` path.
 
+## Decide before you start
+
+`init` asks for these values once and writes them to `agent-sync.env`. Only the first three have no default.
+
+| Value | `init` flag | Required | Example | Note |
+|---|---|---|---|---|
+| Project name | `--name` | yes | `acme` | slug `[a-z0-9][a-z0-9_-]*`, used in hook and skill names |
+| Folder of checkouts | `--root` | yes | `/home/me/acme` | must be the same path on every machine, or session resume does not work |
+| Chat language | `--user-language` | yes | `Polish` | language of long chat answers |
+| Base branch | `--base-branch` | better set it | `develop` or `main` | found by itself only when `--root` is one git checkout |
+| GitHub org | `--org` | no | default: the name | for `gh` and PR links |
+| Secrets folder | `--creds` | no | default: `/home/me/acme-creds` | outside every checkout |
+| History server | `--server` | no | default: empty | SSH alias; empty means transcripts stay on this machine |
+| Sync repository | (git remote) | yes | `git@github.com:me/agent-sync.git` | must be **private** |
+
+Optional features need their own setup, each in its section: Telegram message when an agent waits (`~/.config/herdr-notify.env`, see [Where secrets live](#where-secrets-live)), country check of the exit IP (`GEO_ALLOWED`, see [Hooks](#hooks)), messages between hosts (`~/.config/herdr-hosts.conf`, see [Cross-host messaging](#cross-host-messaging-optional)). The other variables only tune limits and timeouts and have working defaults: [Variables](#variables-agent-syncenv).
+
 ## Step by step: first machine
 
 The example project is called `acme`. Checkouts live in `/home/me/acme`. The agent-sync remote is private.
