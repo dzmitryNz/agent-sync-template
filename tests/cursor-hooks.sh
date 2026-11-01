@@ -114,7 +114,7 @@ t_plan_no_space() {
 # --- awake -------------------------------------------------------------------
 t_awake() {
   export AWAKE_STATE_DIR="$TMP/awake"
-  export POWER_SUPPLY_DIR="$TMP/power"
+  export POWER_SUPPLY_DIR="$TMP/power" AGENT_SYNC_OS=linux
   export INHIBIT_BIN="$TMP/bin/systemd-inhibit"
   mkdir -p "$AWAKE_STATE_DIR" "$POWER_SUPPLY_DIR/BAT0"
   printf 'Battery\n' > "$POWER_SUPPLY_DIR/BAT0/type"
