@@ -350,10 +350,12 @@ bin/check.sh                            agent-sync-check: did sync come up after
 | `project-develop [--dry-run] [repo...]` | fast-forward primary checkouts onto `origin/$PROJECT_BASE_BRANCH` |
 | `pr-diff <repo> <n> [file...]` | PR diff in parts |
 | `history-sync` | rsync transcripts; quiet when `SYNC_SERVER` is empty |
-| `agent-sessions list [text] [--on DATE] [--since D --until D] [--host H] [--page N] [--all]` | |
-| `agent-sessions resume <id\|n> [--print]` | |
-| `agent-sessions brief <id>` | |
-| `agent-sessions pickup <id\|n> [--agent claude\|cursor] [--print]` | new session with a digest |
+| `agent-sessions list [text] [--on DATE] [--since D --until D] [--host H] [--agent A] [--page N] [--all]` | `--agent`: claude, cursor, opencode, mimo |
+| `agent-sessions resume <id\|n> [--print]` | native resume per agent |
+| `agent-sessions brief <id>` | digest via a shape-based normalizer (jsonl or sqlite) |
+| `agent-sessions pickup <id\|n> [--agent claude\|cursor\|opencode\|mimo] [--print]` | new session with a digest; `--agent` is where to launch |
+| `registry-backfill.sh` | Claude jsonl + OpenCode/Mimo SQLite into the session registry (`transcript: sqlite:<db>`; DBs stay local) |
+| `session-transcript-normalize.sh` | used by `brief`/`pickup`: record shape → user prompts / edits / shell commands |
 | `register-me [--id <session-id>] "what I am working on"` | record a session started before the hook existed |
 | `herdr-spaces [list [host...]]` / `me` / `send <host> <label> [msg\|--file path]` | |
 | `herdr-pane-reply <pane_id>` | last `[… RESULT]` block; exit 1 if none |

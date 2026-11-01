@@ -342,10 +342,12 @@ bin/check.sh                            agent-sync-check: поднялся ли 
 | `project-develop [--dry-run] [repo...]` | fast-forward основных чекаутов на `origin/$PROJECT_BASE_BRANCH` |
 | `pr-diff <repo> <n> [файл...]` | diff PR по частям |
 | `history-sync` | rsync транскриптов; молчит, если `SYNC_SERVER` пуст |
-| `agent-sessions list [текст] [--on ДАТА] [--since D --until D] [--host H] [--page N] [--all]` | |
-| `agent-sessions resume <id\|n> [--print]` | |
-| `agent-sessions brief <id>` | |
-| `agent-sessions pickup <id\|n> [--agent claude\|cursor] [--print]` | новая сессия с выжимкой |
+| `agent-sessions list [текст] [--on ДАТА] [--since D --until D] [--host H] [--agent A] [--page N] [--all]` | `--agent`: claude, cursor, opencode, mimo |
+| `agent-sessions resume <id\|n> [--print]` | нативный resume у каждого агента |
+| `agent-sessions brief <id>` | выжимка через нормализатор по форме записи (jsonl или sqlite) |
+| `agent-sessions pickup <id\|n> [--agent claude\|cursor\|opencode\|mimo] [--print]` | новая сессия с выжимкой; `--agent` — куда открыть |
+| `registry-backfill.sh` | Claude jsonl + OpenCode/Mimo SQLite в реестр сессий (`transcript: sqlite:<db>`; сами БД локальные) |
+| `session-transcript-normalize.sh` | для `brief`/`pickup`: форма записи → промпты / правки / shell |
 | `register-me [--id <session-id>] "над чем работаю"` | записать сессию, стартовавшую до хука |
 | `herdr-spaces [list [host...]]` / `me` / `send <host> <label> [текст\|--file путь]` | |
 | `herdr-pane-reply <pane_id>` | последний блок `[… RESULT]`; код 1, если его нет |

@@ -4,15 +4,18 @@
 #   agent-sessions.sh list [query] [flags]    sessions, newest first
 #   agent-sessions.sh resume <id|number>      continue a session (full transcript)
 #   agent-sessions.sh resume <id> --print     only show the command
-#   agent-sessions.sh brief <id>              digest of the transcript
-#   agent-sessions.sh pickup <id|number> [--agent|--kind claude|cursor] [--print]
+#   agent-sessions.sh brief <id>              digest of any readable transcript
+#   agent-sessions.sh pickup <id|number> [--agent|--kind claude|cursor|opencode|mimo] [--print]
 #                                            new session with a digest instead of resume;
-#                                            --agent cursor — in agent/cursor-agent;
+#                                            source is jsonl/sqlite by shape, not by label;
+#                                            --agent — where to open the new session;
 #                                            --print — only the prompt, no exec
 set -uo pipefail
 . "$(dirname "$(readlink -f "$0")")/lib/compat.sh" || exit 1
 
 SESSIONS_DIR="${SESSIONS_DIR:-$HOME/.agent-sync/sessions}"
+BIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+NORMALIZE="$BIN_DIR/session-transcript-normalize.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
 
@@ -45,7 +48,7 @@ agent-sessions list [query] [flags]
                     --on <d> — exactly that day. The date can be in any form that
                     date -d understands: 2026-09-04, "last friday", "3 days ago"
       --host H      only from this machine
-      --agent A     claude | cursor
+      --agent A     claude | cursor | opencode | mimo
       --all         no limit and no pages
 EOF
 }
@@ -94,6 +97,7 @@ locate_session() { # <number|id> -> 0/1, F_ID F_AGENT F_TARGET
 
   F_ID="$(jq -r '.session_id' <<<"$found")"
   F_AGENT="$(jq -r '.agent // "claude"' <<<"$found")"
+  F_TRANSCRIPT="$(jq -r '.transcript // ""' <<<"$found")"
   local cwd home; cwd="$(jq -r '.cwd // ""' <<<"$found")"; home="$(jq -r '.home // ""' <<<"$found")"
   F_TARGET="$(local_cwd "$cwd" "$home")"
 }
@@ -196,9 +200,9 @@ cmd_list() {
   printf 'continue:  agent-sessions resume <number|id>\n'
 }
 
-# Digest of a transcript: what was worked on, what files changed, what was run.
-# Needed when no plan was kept: it is cheaper for a fresh agent to read a couple of kilobytes
-# than to load a megabyte transcript into context.
+# Digest: normalizer → {user,edit,shell}, no if-agent branches.
+# jsonl (Claude/Cursor/similar) and sqlite (OpenCode/Mimo); an unknown agent with a
+# similar shape still yields a digest.
 cmd_brief() {
   local want="${1:?session id is required}" line found=''
   while IFS= read -r line; do
@@ -207,52 +211,52 @@ cmd_brief() {
     if [ "$want" = "$id" ] || [ "${id#"$want"}" != "$id" ]; then found="$line"; break; fi
   done < <(records)
 
-  local id cwd home transcript
+  local id="$want" cwd='' home='' transcript=''
   if [ -n "$found" ]; then
     id="$(jq -r '.session_id' <<<"$found")"
     cwd="$(jq -r '.cwd // ""' <<<"$found")"
     home="$(jq -r '.home // ""' <<<"$found")"
     transcript="$(jq -r '.transcript // ""' <<<"$found")"
-  else
-    id="$want"
   fi
-  # the record may be missing — look for the transcript in all projects
-  if [ ! -f "${transcript:-}" ]; then
-    transcript="$(find "$HOME/.claude/projects" -name "$id*.jsonl" -type f 2>/dev/null | head -1)"
-  fi
-  [ -f "${transcript:-}" ] || { echo "transcript not found for session $want" >&2; exit 1; }
 
-  [ -n "${cwd:-}" ] || cwd="$(jq -rs 'map(select(.cwd != null) | .cwd) | (.[0] // "")' "$transcript")"
-  printf 'session [%s]  directory: %s\n' "${id:0:8}" "$(local_cwd "$cwd" "${home:-}")"
+  [ -x "$NORMALIZE" ] || { echo "missing $NORMALIZE" >&2; exit 1; }
+  local -a norm_args=(--id "$id")
+  [ -n "$transcript" ] && norm_args+=(--transcript "$transcript")
+  [ -n "$cwd" ] && norm_args+=(--cwd "$cwd")
+  local norm
+  if ! norm="$("$NORMALIZE" "${norm_args[@]}" 2>/dev/null)"; then
+    echo "transcript not found for session $want" >&2
+    exit 1
+  fi
+  [ -n "$norm" ] || { echo "transcript not found for session $want" >&2; exit 1; }
+
+  local meta_cwd
+  meta_cwd="$(jq -rs 'map(select(.k=="meta") | .cwd // empty) | .[0] // empty' <<<"$norm")"
+  [ -n "$cwd" ] || cwd="$meta_cwd"
+  printf 'session [%s]  directory: %s\n' "${id:0:8}" "$(local_cwd "${cwd:-}" "${home:-}")"
   local plan; plan="$([ -n "$found" ] && jq -r '.plan // ""' <<<"$found")"
   [ -n "$plan" ] && printf 'plan: %s\n' "$plan"
 
   echo
   echo "what was asked:"
   jq -rs '
-    map(select(.type == "user")
-        | .message.content
-        | if type == "string" then . else (map(select(.type=="text").text) | join(" ")) end)
-    | map(select(. != null and . != "" and (startswith("<") | not)))
+    map(select(.k=="user") | .t // empty)
+    | map(select(. != null and . != ""))
     | (if length > 8 then (.[0:4] + ["…"] + .[-4:]) else . end)
     | map(gsub("\\s+"; " ") | if length > 100 then .[0:99] + "…" else . end)
-    | .[]' "$transcript" 2>/dev/null \
+    | .[]' <<<"$norm" 2>/dev/null \
     | sed 's/^/  · /'
 
   echo
   echo "files changed:"
-  jq -rs '[.[] | .message?.content? // empty | if type == "array" then .[] else empty end
-           | select(.type == "tool_use" and (.name == "Edit" or .name == "Write"))
-           | .input.file_path // empty] | unique | .[]' "$transcript" 2>/dev/null \
+  jq -rs '[.[] | select(.k=="edit") | .p // empty] | unique | .[]' <<<"$norm" 2>/dev/null \
     | tail -20 | sed 's/^/  · /'
 
   echo
   echo "commands run:"
-  jq -rs '[.[] | .message?.content? // empty | if type == "array" then .[] else empty end
-           | select(.type == "tool_use" and .name == "Bash")
-           | .input.command // empty
-           | gsub("\\s+"; " ") | if length > 80 then .[0:79] + "…" else . end] | .[]' \
-    "$transcript" 2>/dev/null | sort -u | tail -12 | sed 's/^/  · /'
+  jq -rs '[.[] | select(.k=="shell") | .c // empty
+           | gsub("\\s+"; " ") | if length > 80 then .[0:79] + "…" else . end] | unique | .[]' \
+    <<<"$norm" 2>/dev/null | tail -12 | sed 's/^/  · /'
 }
 
 cmd_resume() {
@@ -263,23 +267,34 @@ cmd_resume() {
   local id="$F_ID" agent="$F_AGENT" target="$F_TARGET"
 
   [ -d "$target" ] || echo "warning: directory $target does not exist on this machine" >&2
-  # transcripts are synced only for Claude; Cursor keeps its own history
-  if [ "$agent" != cursor ] && [ ! -f "$(transcript_of "$target" "$id")" ]; then
-    echo "warning: no history for this session here — transcript sync has not run yet (bin/history-sync.sh)" >&2
-  fi
+  # history-sync warning only for Claude jsonl; sqlite/cursor stay local
+  case "$agent" in
+    cursor|opencode|mimo|codex) ;;
+    *)
+      if [ ! -f "$(transcript_of "$target" "$id")" ]; then
+        echo "warning: no history for this session here — transcript sync has not run yet (bin/history-sync.sh)" >&2
+      fi
+      ;;
+  esac
 
   local resume_cmd
-  if [ "$agent" = cursor ]; then
-    resume_cmd="cursor-agent --resume $id"
-  else
-    resume_cmd="claude --resume $id"
-  fi
+  case "$agent" in
+    cursor)   resume_cmd="cursor-agent --resume $id" ;;
+    opencode) resume_cmd="opencode --session $id" ;;
+    mimo)     resume_cmd="mimo --session $id" ;;
+    *)        resume_cmd="claude --resume $id" ;;
+  esac
 
   if [ -n "$print" ]; then
     printf "cd '%s' && %s\n" "$target" "$resume_cmd"
   else
     cd "$target" 2>/dev/null || { echo "cannot change to $target" >&2; exit 1; }
-    if [ "$agent" = cursor ]; then exec cursor-agent --resume "$id"; else exec claude --resume "$id"; fi
+    case "$agent" in
+      cursor)   exec cursor-agent --resume "$id" ;;
+      opencode) exec opencode --session "$id" ;;
+      mimo)     exec mimo --session "$id" ;;
+      *)        exec claude --resume "$id" ;;
+    esac
   fi
 }
 
@@ -293,20 +308,17 @@ cursor_agent_bin() {
 
 usage_pickup() {
   cat <<'EOF'
-agent-sessions pickup <number|id> [--agent|--kind claude|cursor] [--print]
+agent-sessions pickup <number|id> [--agent|--kind claude|cursor|opencode|mimo] [--print]
 
-  new session with a brief digest instead of a full resume (source — the claude transcript)
-  --agent, --kind   where to open: claude (default) or cursor (agent/cursor-agent)
+  new session with a brief digest instead of a full resume
+  (source — any readable transcript: jsonl or sqlite; does not refuse by kind)
+  --agent, --kind   where to open the new session (not "can we brief")
   --print           only print the prompt, no exec — to paste into a live pane
 EOF
 }
 
-# A new session instead of resume: do not pull the whole transcript (it grows quadratically —
-# cache_read rereads the history on every turn), but open the agent with a one-time
-# brief digest in the first message. The saving on long sessions is noticeable, we pay
-# with lost reasoning details — if they are needed, the transcript is still there.
-# By default — exec claude; --agent cursor opens agent/cursor-agent;
-# --print only prints the prompt (handy in an already live Cursor pane).
+# A new session instead of resume: brief digest instead of the full transcript.
+# --agent/--kind is only the launch target; brief reads the source by shape.
 cmd_pickup() {
   local want='' into=claude print=''
 
@@ -315,8 +327,8 @@ cmd_pickup() {
       --agent|--kind)
         into="${2:-}"
         case "$into" in
-          claude|cursor) ;;
-          *) echo "--agent/--kind needs claude or cursor" >&2; usage_pickup >&2; exit 2 ;;
+          claude|cursor|opencode|mimo) ;;
+          *) echo "--agent/--kind needs claude|cursor|opencode|mimo" >&2; usage_pickup >&2; exit 2 ;;
         esac
         shift 2 ;;
       --print) print=1; shift ;;
@@ -329,21 +341,25 @@ cmd_pickup() {
   [ -n "$want" ] || { echo "a number or session id is required" >&2; usage_pickup >&2; exit 2; }
 
   locate_session "$want" || { echo "session not found: $want" >&2; exit 1; }
-  local id="$F_ID" agent="$F_AGENT" target="$F_TARGET"
+  local id="$F_ID" agent="$F_AGENT" target="$F_TARGET" transcript="$F_TRANSCRIPT"
 
   [ -d "$target" ] || { echo "cannot pick up: directory $target does not exist on this machine" >&2; exit 1; }
-  # brief reads the Claude jsonl; cursor sessions have their own history — resume, not pickup
-  if [ "$agent" = cursor ]; then
-    echo "pickup takes the digest from the claude transcript — cursor has its own history; use: agent-sessions resume $want" >&2
-    exit 1
-  fi
 
   local brief; brief="$(cmd_brief "$id")" || exit 1
+  local tr_hint="${transcript:-}"
+  if [ -z "$tr_hint" ]; then
+    case "$agent" in
+      cursor)   tr_hint="~/.cursor/projects/*/agent-transcripts/${id}/${id}.jsonl" ;;
+      opencode) tr_hint="sqlite:~/.local/share/opencode/opencode.db#$id" ;;
+      mimo)     tr_hint="sqlite:~/.local/share/mimocode/mimocode.db#$id" ;;
+      *)        tr_hint="~/.claude/projects/*/${id}.jsonl" ;;
+    esac
+  fi
   local prompt="Pick up session [${id:0:8}] without a full resume — here is a digest instead of the transcript history:
 
 $brief
 
-Briefly summarize what was done and what is next, and continue from there. Do not ask again about what the digest already shows; for details of specific reasoning, look into the transcript ~/.claude/projects/*/${id}.jsonl only if you really need it."
+Briefly summarize what was done and what is next, and continue from there. Do not ask again about what the digest already shows; for details of specific reasoning, look into the transcript ${tr_hint} only if you really need it."
 
   if [ -n "$print" ]; then
     printf '%s\n' "$prompt"
@@ -351,12 +367,21 @@ Briefly summarize what was done and what is next, and continue from there. Do no
   fi
 
   cd "$target" 2>/dev/null || { echo "cannot change to $target" >&2; exit 1; }
-  if [ "$into" = cursor ]; then
-    local bin; bin="$(cursor_agent_bin)"
-    exec "$bin" "$prompt"
-  else
-    exec claude "$prompt"
-  fi
+  case "$into" in
+    cursor)
+      local bin; bin="$(cursor_agent_bin)"
+      exec "$bin" "$prompt"
+      ;;
+    opencode)
+      exec opencode --prompt "$prompt"
+      ;;
+    mimo)
+      exec mimo run -- "$prompt"
+      ;;
+    *)
+      exec claude "$prompt"
+      ;;
+  esac
 }
 
 case "${1:-list}" in
@@ -364,6 +389,6 @@ case "${1:-list}" in
   resume) shift; cmd_resume "$@" ;;
   brief)  shift; cmd_brief  "$@" ;;
   pickup) shift; cmd_pickup "$@" ;;
-  *) echo "commands: list [query] [flags] | resume <number|id> [--print] | brief <id> | pickup <number|id> [--agent|--kind claude|cursor] [--print]" >&2
+  *) echo "commands: list [query] [flags] | resume <number|id> [--print] | brief <id> | pickup <number|id> [--agent|--kind …] [--print]" >&2
      echo >&2; usage_list >&2; exit 2 ;;
 esac
