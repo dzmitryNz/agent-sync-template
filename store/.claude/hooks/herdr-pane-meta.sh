@@ -20,7 +20,8 @@ for _compat in "$(dirname "$(readlink -f "$0")")/../../../bin/lib/compat.sh" "${
 command -v herdr >/dev/null 2>&1 || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 
-SOURCE="claude-hook"
+SOURCE="${HERDR_META_SOURCE:-claude-hook}"
+AGENT_NAME="${HERDR_META_AGENT:-claude}"
 # Metadata lives 12 hours: if a session dies in a non-clean way, the pane
 # goes back to the default display instead of lying forever.
 TTL_MS=43200000
@@ -151,6 +152,8 @@ clip() {
 TITLE=""; WORKING=""; BLOCKED=""; LAST_SEQ=0; LAST_USAGE_TS=0; USAGE=""
 # shellcheck disable=SC1090
 [ -f "$STATE_FILE" ] && . "$STATE_FILE"
+# usage-limits is the Claude subscription. Cursor has its own Auto/API; do not show Claude % there.
+[ "$AGENT_NAME" = claude ] || USAGE=""
 
 # The sidebar (Agents section) draws only display_agent + the label under it — it has no
 # place for arbitrary metadata: --token is visible in `pane get`, but is
@@ -201,6 +204,8 @@ case "$event" in
     WORKING="thinking"
     BLOCKED=""
 
+    # /usage and the transcript format are Claude. For Cursor that is a foreign limit.
+    if [ "$AGENT_NAME" = claude ]; then
     now_s=$(date +%s)
     usage_pct_shared "$now_s"
     usage_pct="$SHARED_USAGE_LAST"
@@ -229,11 +234,21 @@ case "$event" in
         fi
       fi
     fi
+    fi
     ;;
   *)
     exit 0
     ;;
 esac
+
+# Percent updates on Stop and then lives in pane state. Before the first Stop,
+# reuse the shared cache string so the sidebar is not only "!!!" and battery.
+if [ "$AGENT_NAME" = claude ] && [ -z "$USAGE" ] && [ -f "$SHARED_USAGE_FILE" ]; then
+  SHARED_PCT=""
+  # shellcheck disable=SC1090
+  . "$SHARED_USAGE_FILE"
+  USAGE="${SHARED_PCT:-}"
+fi
 
 [ -n "$TITLE" ] || TITLE="$where"
 
@@ -252,6 +267,7 @@ seq_num=$(date +%s%3N)
 # when the edge is very close. The threshold is softer than limit-guard: seeing it early
 # is more useful than learning it when it is too late.
 usage_marker() {
+  [ "$AGENT_NAME" = claude ] || return 0
   local file="$STATE_DIR/usage-limits" s='' w=''
   [ -f "$file" ] || return 0
   while IFS='=' read -r k v; do
@@ -267,10 +283,11 @@ usage_marker() {
 }
 
 # After a fresh /usage the percents are shared — push display_agent on the other
-# Claude panes that have our state file (an active session with claude-hook).
+# panes of the same agent that have our state file.
 refresh_other_claude_panes() {
   local new_usage="$1"
   [ -n "$new_usage" ] || return 0
+  [ "$AGENT_NAME" = claude ] || return 0
 
   local agents_json
   agents_json=$(herdr agent list 2>/dev/null) || return 0
@@ -303,7 +320,7 @@ refresh_other_claude_panes() {
     [ -n "$o_branch" ] && [ "$o_branch" != "HEAD" ] && o_where="$o_project@$o_branch"
     [ -n "$o_title" ] || o_title="$o_where"
 
-    o_who="$(usage_marker)claude · $new_usage"
+    o_who="$(usage_marker)$AGENT_NAME · $new_usage"
     o_who="$o_who$(battery_suffix)"
 
     o_ready="ready · $o_project"
@@ -331,7 +348,8 @@ refresh_other_claude_panes() {
       printf 'LAST_USAGE_TS=%s\n' "$o_last_usage_ts"
       printf 'USAGE=%q\n' "$new_usage"
     } > "$sf"
-  done < <(jq -r '.result.agents[] | select(.agent == "claude") | .pane_id' <<<"$agents_json" 2>/dev/null)
+  done < <(jq -r --arg a "$AGENT_NAME" \
+    '.result.agents[] | select(.agent == $a) | .pane_id' <<<"$agents_json" 2>/dev/null)
 }
 
 battery_suffix() {
@@ -347,7 +365,42 @@ battery_suffix() {
   fi
 }
 
-who="$(usage_marker)claude"
+# Cursor has its own Auto/API from /usage. On PreToolUse use the cache only so the tool is not held.
+CURSOR_AUTO=0
+CURSOR_API=0
+if [ "$AGENT_NAME" = cursor ]; then
+  _usage_bin="${CURSOR_USAGE_BIN:-$(dirname "$(readlink -f "$0")")/../../../bin/cursor-usage.sh}"
+  if [ -x "$_usage_bin" ]; then
+    _usage_args=()
+    [ "$event" = PreToolUse ] && _usage_args+=(--cached)
+    while IFS='=' read -r _k _v; do
+      case "$_k" in
+        AUTO) CURSOR_AUTO="$_v" ;;
+        API)  CURSOR_API="$_v" ;;
+        LINE) USAGE="$_v" ;;
+      esac
+    done < <("$_usage_bin" "${_usage_args[@]}" 2>/dev/null)
+  fi
+fi
+
+cursor_marker() {
+  local a=${1:-0} p=${2:-0} top warn hard
+  case "$a" in ''|*[!0-9]*) a=0 ;; esac
+  case "$p" in ''|*[!0-9]*) p=0 ;; esac
+  top=$a
+  [ "$p" -gt "$top" ] && top=$p
+  warn="${SIDEBAR_WARN_PCT:-80}"
+  hard="${LIMIT_WARN_PCT:-90}"
+  if   [ "$top" -ge "$hard" ]; then printf '!!! '
+  elif [ "$top" -ge "$warn" ]; then printf '! '
+  fi
+}
+
+if [ "$AGENT_NAME" = cursor ]; then
+  who="$(cursor_marker "$CURSOR_AUTO" "$CURSOR_API")$AGENT_NAME"
+else
+  who="$(usage_marker)$AGENT_NAME"
+fi
 [ -n "$USAGE" ] && who="$who · $USAGE"
 who="$who$(battery_suffix)"
 

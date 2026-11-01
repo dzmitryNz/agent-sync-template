@@ -319,7 +319,7 @@ Other knobs (environment, not the env file):
 
 ## What is synced
 
-From `sync.conf`: `~/.claude` rules, `settings.json`, hooks, skills and plans; herdr `config.toml`. `settings.local.json` stays on this machine. Per-project memory is opt-in: uncomment one `.claude/projects/<project-key>/memory` line in `sync.conf`. The shipped line is a comment, so memory is not synced until you do that.
+From `sync.conf`: `~/.claude` rules, `settings.json`, hooks, skills and plans; `~/.cursor/hooks.json` and `herdr-agent-state.sh`; herdr `config.toml`. `settings.local.json` stays on this machine. Per-project memory is opt-in: uncomment one `.claude/projects/<project-key>/memory` line in `sync.conf`. The shipped line is a comment, so memory is not synced until you do that.
 
 `history-sync`, when `SYNC_SERVER` is set, sends every `*.jsonl` under `HISTORY_SRC`. The default is `~/.claude/projects`: transcripts of all Claude projects on this machine, not only this one. Set `HISTORY_SRC` to a single project directory to limit that, or leave `SYNC_SERVER` empty and history stays local.
 
@@ -403,7 +403,7 @@ Wired in `store/.claude/settings.json`. A hook with no `"async": true` can block
 | `herdr-pane-meta.sh` | SessionStart, UserPromptSubmit, PreToolUse, Notification, Stop, SessionEnd | no | Sidebar: branch on the tab, agent and limit below, pace arrows, `AC`/`B` battery, pushes a fresh percent to other Claude panes. |
 | `session-record.sh` | SessionStart, UserPromptSubmit, Stop, SessionEnd, PostToolUse | no | Registry for `agent-sessions`. |
 | `awake-hook.sh` | UserPromptSubmit, Notification, Stop, SessionEnd | no | On battery, holds a sleep lock while the agent works (`keep-awake.sh`: `systemd-inhibit` on Linux, `caffeinate` on macOS). |
-| `limit-wake-hook.sh` | Notification, Stop | no | After a limit reset, prompts the pane to continue (a `systemd-run` timer on Linux, a one-shot launchd agent on macOS). `--run --target PANE --message TEXT` runs it by hand. |
+| `limit-wake-hook.sh` | Notification, Stop | no | After a limit reset, prompts the pane to continue. Linux uses `limit-schedule.sh` (`systemd-run`); macOS keeps a one-shot launchd agent. On `--run`, drains `limit-deferred-handoff` for that pane first when a queue entry exists. |
 | `role-clear.sh` | Stop | no | Sends `/clear` on a standing role pane after a finished request. Leaves a marker while a `[TAG RESULT]` is still owed. |
 | `project-block-primary-checkout-write.sh` | PreToolUse Edit, Write, NotebookEdit | yes | Blocks writes to the primary checkout under `PROJECT_ROOT`. Work in a worktree. |
 | `block-dangerous-rm.sh` | PreToolUse Bash | yes | Blocks `rm -rf` of `/`, `$HOME`, or a glob that covers everything. |
@@ -411,6 +411,23 @@ Wired in `store/.claude/settings.json`. A hook with no `"async": true` can block
 | `project-worktree-via-wt-new.sh` | PreToolUse Bash and EnterWorktree | yes | Blocks raw `git worktree add\|move` under `PROJECT_ROOT`. Use `wt-new`. |
 
 `limit-pace.sh` is not a hook. The sidebar calls it. Forecast = used% × window / elapsed. Window is 5 hours (session) and 7 days (week). A reset time with no zone uses `LIMIT_PACE_TZ`, or `LIMIT_PACE_GAP_HOURS` when that is empty. ↑ under 60% (headroom), no arrow 60–100%, ↓ 100–130%, ↓↓ above 130% or already at 100%. The first 10% of the window has no arrow, except at 100%. A missing reset date has no arrow. The herdr font does not draw emoji, so the marks are `↑` `↓` `↓↓`.
+
+`limit-schedule.sh` and `limit-deferred-handoff.sh` live in `bin/`. The former is the shared Linux timer helper; the latter queues a herdr handoff until after the usage reset and drains it from `limit-wake-hook --run`.
+
+## Cursor hooks
+
+Cursor talks a different hook protocol (`continue` / `user_message` JSON, its own event names). Thin adapters in `bin/cursor-*.sh` wrap the Claude hooks. Wire them through `store/.cursor/hooks.json` (synced to `~/.cursor/hooks.json` via `sync.conf`).
+
+| Adapter | Cursor events | What it does |
+|---|---|---|
+| `cursor-session-record.sh` | sessionStart, beforeSubmitPrompt, stop, sessionEnd | Maps into `session-record.sh` so Cursor sessions enter `agent-sessions`. |
+| `cursor-pane-meta.sh` | sessionStart, beforeSubmitPrompt, preToolUse, stop, subagentStop, sessionEnd | Translates the payload and runs `herdr-pane-meta.sh` as `HERDR_META_AGENT=cursor` (Auto/API from `cursor-usage.sh`, not Claude `/usage`). `preToolUse` must print `{"permission":"allow"}`. |
+| `cursor-geo-guard.sh` | beforeSubmitPrompt | Same geo check; Cursor needs `{"continue":false,"user_message":"..."}` instead of exit 2. |
+| `cursor-plan-resume.sh` | beforeSubmitPrompt | Once per conversation, injects the plan whose `**Herdr space:**` matches this space. |
+| `cursor-awake-hook.sh` | beforeSubmitPrompt, stop, sessionEnd | Sleep lock while the agent works (same as Claude `awake-hook`). |
+| `cursor-limit-guard.sh` | (optional) | Stays quiet: Claude quota text must not enter a Cursor prompt. |
+
+`cursor-usage.sh` is not a Cursor hook entry; the pane meta adapter calls it. `store/.cursor/herdr-agent-state.sh` is the herdr Cursor integration helper.
 
 ## Skills
 

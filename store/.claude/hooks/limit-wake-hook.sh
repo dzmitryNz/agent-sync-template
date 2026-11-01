@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# After a usage-limit notification: wake the pane at reset+5min.
+# Linux schedules via limit-schedule.sh (systemd). macOS keeps a one-shot launchd agent.
+# On --run, drain deferred handoffs for the pane first when that queue exists.
 set -euo pipefail
 for _compat in "$(dirname "$(readlink -f "$0")")/../../../bin/lib/compat.sh" "${SYNC_HOME:-$HOME/.agent-sync}/bin/lib/compat.sh"; do [ -f "$_compat" ] && { . "$_compat" || exit 1; break; }; done
+
+_sync_bin="$(cd "$(dirname "$(readlink -f "$0")")/../../../bin" 2>/dev/null && pwd)"
+SCHEDULE="${AGENT_SYNC_BIN:-${_sync_bin:-$HOME/.agent-sync/bin}}/limit-schedule.sh"
+DEFER="${AGENT_SYNC_BIN:-${_sync_bin:-$HOME/.agent-sync/bin}}/limit-deferred-handoff.sh"
 
 usage() {
   printf '%s\n' \
@@ -66,6 +73,9 @@ if [[ "$mode" == run ]]; then
   [[ -n "$target" ]] || exit 0
   # herdr finds its socket by XDG_RUNTIME_DIR on Linux; macOS has no /run/user
   [[ "$AGENT_SYNC_OS" == darwin ]] || export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+  if [[ -x "$DEFER" ]] && "$DEFER" --drain --target "$target" 2>/dev/null; then
+    exit 0
+  fi
   run_target
   exit 0
 fi
@@ -84,6 +94,26 @@ grep -Eiq \
   'rate[ _-]*limit|usage[ _-]*limit|limit[ _-]*(reached|exhausted|exceeded)|out of (your )?credits|resets .*(am|pm|utc|europe)' \
   <<<"$text" || exit 0
 
+script=$(readlink -f "$0")
+
+# Linux: shared scheduler (same timers as deferred-handoff).
+if [[ "$AGENT_SYNC_OS" != darwin ]]; then
+  [[ -x "$SCHEDULE" ]] || exit 0
+  if [[ "${LIMIT_WAKE_DRY_RUN:-0}" == 1 ]]; then
+    delay=$(bash "$SCHEDULE" wake-delay 2>/dev/null || true)
+    printf 'LIMIT_WAKE target=%s delay=%ss\n' "$target" "${delay:-?}"
+    exit 0
+  fi
+  bash "$SCHEDULE" schedule-job "$target" wake \
+    "$script" --run --target "$target" --message "$message" || exit 0
+  log_dir="${XDG_RUNTIME_DIR:-/tmp}/claude-herdr-meta"
+  mkdir -p "$log_dir"
+  printf '%s\tpane=%s\tkind=wake\n' "$(date --iso-8601=seconds)" "$target" \
+    >>"$log_dir/limit-wake.log"
+  exit 0
+fi
+
+# macOS: one-shot launchd (limit-schedule is systemd-only).
 limits_file="${XDG_RUNTIME_DIR:-/tmp}/claude-herdr-meta/usage-limits"
 [[ -r "$limits_file" ]] || exit 0
 # shellcheck disable=SC1090
@@ -109,72 +139,51 @@ done
 
 wake_epoch=$((reset_epoch + 5 * 60))
 delay=$((wake_epoch - now))
-script=$(readlink -f "$0")
 
-if [[ "$AGENT_SYNC_OS" == darwin ]]; then
-  unit="dev.agent-sync.limit-wake-${target//[^A-Za-z0-9]/-}"
-  domain="gui/$(id -u)"
-  # A reset is at most 7 days away. An older agent missed its minute (the Mac was off)
-  # and would fire on that date next year: remove it, for every pane.
-  find "$HOME/Library/LaunchAgents" -maxdepth 1 -name 'dev.agent-sync.limit-wake-*.plist' -mtime +8 \
-    2>/dev/null | while read -r old; do
-    launchctl bootout "$domain/$(basename "$old" .plist)" >/dev/null 2>&1
-    rm -f "$old"
-  done || true
-  plist="$HOME/Library/LaunchAgents/$unit.plist"
-  if [[ "${LIMIT_WAKE_DRY_RUN:-0}" == 1 ]]; then
-    printf 'LIMIT_WAKE target=%s reset=%s delay=%ss unit=%s\n' \
-      "$target" "$(date -d "@$reset_epoch" --iso-8601=seconds)" "$delay" "$unit"
-    exit 0
-  fi
-  read -r w_month w_day w_hour w_min <<<"$(date -d "@$wake_epoch" '+%-m %-d %-H %-M')"
-  body=$(
-    printf '<?xml version="1.0" encoding="UTF-8"?>\n'
-    printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
-    printf '<plist version="1.0">\n<dict>\n  <key>Label</key><string>%s</string>\n' "$unit"
-    printf '  <key>ProgramArguments</key>\n  <array>\n'
-    for a in "$script" --run --target "$target" --message "$message" --launchd-label "$unit"; do
-      printf '    <string>%s</string>\n' "$(agent_sync_xml_escape "$a")"
-    done
-    printf '  </array>\n  <key>StartCalendarInterval</key>\n  <dict>\n'
-    printf '    <key>Month</key><integer>%s</integer>\n    <key>Day</key><integer>%s</integer>\n' "$w_month" "$w_day"
-    printf '    <key>Hour</key><integer>%s</integer>\n    <key>Minute</key><integer>%s</integer>\n' "$w_hour" "$w_min"
-    printf '  </dict>\n  <key>EnvironmentVariables</key>\n  <dict>\n'
-    printf '    <key>PATH</key><string>%s</string>\n  </dict>\n</dict>\n</plist>' "$(agent_sync_xml_escape "$PATH")"
-  )
-  if launchctl print "$domain/$unit" >/dev/null 2>&1; then
-    # Stop and Notification both report one limit: the same wake is already planned
-    [[ -f "$plist" && "$(cat "$plist")" == "$body" ]] && exit 0
-    # A new limit replaces the old wake, which may have missed its minute while the Mac
-    # was off. bootout returns before launchd has removed the job: wait up to 5 s.
-    launchctl bootout "$domain/$unit" >/dev/null 2>&1 || true
-    for _ in $(seq 25); do
-      launchctl print "$domain/$unit" >/dev/null 2>&1 || break
-      sleep 0.2
-    done
-  fi
-  mkdir -p "${plist%/*}"
-  printf '%s\n' "$body" > "$plist"
-  launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || exit 0
-else
-  unit="agent-limit-wake-${target//[^A-Za-z0-9]/-}"
-  if systemctl --user is-active --quiet "$unit.timer" 2>/dev/null ||
-    systemctl --user is-active --quiet "$unit.service" 2>/dev/null; then
-    exit 0
-  fi
-  if [[ "${LIMIT_WAKE_DRY_RUN:-0}" == 1 ]]; then
-    printf 'LIMIT_WAKE target=%s reset=%s delay=%ss unit=%s\n' \
-      "$target" "$(date -d "@$reset_epoch" --iso-8601=seconds)" "$delay" "$unit"
-    exit 0
-  fi
-
-  systemd-run --user \
-    "--unit=$unit" \
-    "--on-active=${delay}s" \
-    --collect \
-    --quiet \
-    "$script" --run --target "$target" --message "$message" >/dev/null 2>&1 || exit 0
+unit="dev.agent-sync.limit-wake-${target//[^A-Za-z0-9]/-}"
+domain="gui/$(id -u)"
+# A reset is at most 7 days away. An older agent missed its minute (the Mac was off)
+# and would fire on that date next year: remove it, for every pane.
+find "$HOME/Library/LaunchAgents" -maxdepth 1 -name 'dev.agent-sync.limit-wake-*.plist' -mtime +8 \
+  2>/dev/null | while read -r old; do
+  launchctl bootout "$domain/$(basename "$old" .plist)" >/dev/null 2>&1
+  rm -f "$old"
+done || true
+plist="$HOME/Library/LaunchAgents/$unit.plist"
+if [[ "${LIMIT_WAKE_DRY_RUN:-0}" == 1 ]]; then
+  printf 'LIMIT_WAKE target=%s reset=%s delay=%ss unit=%s\n' \
+    "$target" "$(date -d "@$reset_epoch" --iso-8601=seconds)" "$delay" "$unit"
+  exit 0
 fi
+read -r w_month w_day w_hour w_min <<<"$(date -d "@$wake_epoch" '+%-m %-d %-H %-M')"
+body=$(
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+  printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+  printf '<plist version="1.0">\n<dict>\n  <key>Label</key><string>%s</string>\n' "$unit"
+  printf '  <key>ProgramArguments</key>\n  <array>\n'
+  for a in "$script" --run --target "$target" --message "$message" --launchd-label "$unit"; do
+    printf '    <string>%s</string>\n' "$(agent_sync_xml_escape "$a")"
+  done
+  printf '  </array>\n  <key>StartCalendarInterval</key>\n  <dict>\n'
+  printf '    <key>Month</key><integer>%s</integer>\n    <key>Day</key><integer>%s</integer>\n' "$w_month" "$w_day"
+  printf '    <key>Hour</key><integer>%s</integer>\n    <key>Minute</key><integer>%s</integer>\n' "$w_hour" "$w_min"
+  printf '  </dict>\n  <key>EnvironmentVariables</key>\n  <dict>\n'
+  printf '    <key>PATH</key><string>%s</string>\n  </dict>\n</dict>\n</plist>' "$(agent_sync_xml_escape "$PATH")"
+)
+if launchctl print "$domain/$unit" >/dev/null 2>&1; then
+  # Stop and Notification both report one limit: the same wake is already planned
+  [[ -f "$plist" && "$(cat "$plist")" == "$body" ]] && exit 0
+  # A new limit replaces the old wake, which may have missed its minute while the Mac
+  # was off. bootout returns before launchd has removed the job: wait up to 5 s.
+  launchctl bootout "$domain/$unit" >/dev/null 2>&1 || true
+  for _ in $(seq 25); do
+    launchctl print "$domain/$unit" >/dev/null 2>&1 || break
+    sleep 0.2
+  done
+fi
+mkdir -p "${plist%/*}"
+printf '%s\n' "$body" > "$plist"
+launchctl bootstrap "$domain" "$plist" >/dev/null 2>&1 || exit 0
 
 log_dir="${XDG_RUNTIME_DIR:-/tmp}/claude-herdr-meta"
 mkdir -p "$log_dir"
