@@ -365,14 +365,23 @@ battery_suffix() {
   fi
 }
 
-# Cursor has its own Auto/API from /usage. On PreToolUse use the cache only so the tool is not held.
+# Cursor has its own Auto/API from /usage. On prompt/tool events use the cache only
+# so beforeSubmitPrompt is not held up to ~8s; refresh on Stop/SubagentStop.
 CURSOR_AUTO=0
 CURSOR_API=0
 if [ "$AGENT_NAME" = cursor ]; then
   _usage_bin="${CURSOR_USAGE_BIN:-$(dirname "$(readlink -f "$0")")/../../../bin/cursor-usage.sh}"
   if [ -x "$_usage_bin" ]; then
     _usage_args=()
-    [ "$event" = PreToolUse ] && _usage_args+=(--cached)
+    case "$event" in
+      PreToolUse) _usage_args+=(--cached) ;;
+      UserPromptSubmit|SessionStart)
+        # Prefer cache on the hot path; fetch once when the cache is still empty
+        # so the first prompt is not a blank Auto/API label.
+        _uc="${CURSOR_USAGE_CACHE:-${XDG_RUNTIME_DIR:-/tmp}/cursor-usage}"
+        [ -f "$_uc" ] && _usage_args+=(--cached)
+        ;;
+    esac
     while IFS='=' read -r _k _v; do
       case "$_k" in
         AUTO) CURSOR_AUTO="$_v" ;;

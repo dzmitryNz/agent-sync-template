@@ -109,12 +109,21 @@ t_marker() {
   check "mark at 92%" grep -q '!!! cursor' <<<"$(opt_value --display-agent)"
 }
 
+t_tool_meta_missing() {
+  export HERDR_PANE_META="$TMP/missing-herdr-pane-meta.sh"
+  local out
+  out="$(jq -nc --arg c "$PROJ" '{hook_event_name:"preToolUse", cwd:$c, tool_name:"Shell",
+    tool_input:{command:"true"}}' | "$HOOK" 2>/dev/null)"
+  check "missing meta still allows the tool" test "$(jq -r .permission <<<"$out")" = allow
+}
+
 run_test "prompt: agent, limit, branch" t_prompt
 run_test "mark at high Auto"            t_marker
 run_test "tool and permission"          t_tool
 run_test "file via path"                t_tool_path
 run_test "session end clears the pane"  t_session_end
 run_test "session start"                t_start
+run_test "preToolUse allow when meta missing" t_tool_meta_missing
 
 printf '\ntotal: %d ok, %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

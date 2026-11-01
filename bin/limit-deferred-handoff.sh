@@ -30,7 +30,7 @@ notify_from_queued() {
   [[ -n "$from" && -x "$SEND" ]] || return 0
   local wake_human='unknown'
   if [[ -n "$wake_epoch" && "$wake_epoch" =~ ^[0-9]+$ ]]; then
-    wake_human=$(date -d "@$wake_epoch" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || wake_human)
+    wake_human=$(date -d "@$wake_epoch" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || echo unknown)
   fi
   local why
   case "$reason" in
@@ -75,9 +75,10 @@ drain() {
   [[ -f "$q" ]] || return 1
   [[ -s "$q" ]] || return 1
   first=$(head -n1 "$q")
-  rest=$(tail -n +2 "$q" 2>/dev/null || true)
   tmp="${q}.tmp"
-  printf '%s' "$rest" >"$tmp"
+  # Write the remainder as a file so the trailing newline of each JSONL line is kept.
+  # Capturing in a variable + printf '%s' drops it and the next enqueue glues onto the last line.
+  tail -n +2 "$q" >"$tmp" 2>/dev/null || : >"$tmp"
   mv "$tmp" "$q"
 
   local skill message from clear_flag
@@ -86,8 +87,8 @@ drain() {
   from=$(jq -r '.from' <<<"$first")
   clear_flag=$(jq -r '.clear' <<<"$first")
 
-  tag=$(printf '%s' "$message" | sed -n '1p' | grep -oE '\[(REVIEW|DEV|DEVOPS|QA|LOGS|DB|DOCS|CLEANER) REQUEST\]' | head -n1 |
-    sed 's/^\[//;s/ REQUEST\]$//')
+  tag=$(printf '%s' "$message" | grep -oE '\[(REVIEW|DEV|DEVOPS|QA|LOGS|DB|DOCS|CLEANER) REQUEST\]' | head -n1 |
+    sed 's/^\[//;s/ REQUEST\]$//' || true)
 
   export HANDOFF_NO_DEFER=1
   if [[ "$clear_flag" == "true" || "$clear_flag" == "1" ]]; then

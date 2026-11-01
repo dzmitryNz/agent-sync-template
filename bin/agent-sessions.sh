@@ -376,7 +376,8 @@ Briefly summarize what was done and what is next, and continue from there. Do no
       exec opencode --prompt "$prompt"
       ;;
     mimo)
-      exec mimo run -- "$prompt"
+      # `mimo run` is a headless one-shot (like `opencode run`); pickup needs the TUI with an initial prompt.
+      exec mimo --prompt "$prompt"
       ;;
     *)
       exec claude "$prompt"

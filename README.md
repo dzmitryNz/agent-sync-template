@@ -319,7 +319,7 @@ Other knobs (environment, not the env file):
 
 ## What is synced
 
-From `sync.conf`: `~/.claude` rules, `settings.json`, hooks, skills and plans; `~/.cursor/hooks.json` and `herdr-agent-state.sh`; herdr `config.toml`. `settings.local.json` stays on this machine. Per-project memory is opt-in: uncomment one `.claude/projects/<project-key>/memory` line in `sync.conf`. The shipped line is a comment, so memory is not synced until you do that.
+From `sync.conf`: `~/.claude` rules, `settings.json`, hooks, skills and plans; herdr `config.toml`. `settings.local.json` stays on this machine. Per-project memory is opt-in: uncomment one `.claude/projects/<project-key>/memory` line in `sync.conf`. Cursor `~/.cursor/hooks.json` is the same pattern — commented out by default so install does not overwrite a user's own Cursor hooks; an example is in `store/.cursor/hooks.json`. Do not sync `herdr-agent-state.sh`; install the herdr Cursor integration instead.
 
 `history-sync`, when `SYNC_SERVER` is set, sends every `*.jsonl` under `HISTORY_SRC`. The default is `~/.claude/projects`: transcripts of all Claude projects on this machine, not only this one. Set `HISTORY_SRC` to a single project directory to limit that, or leave `SYNC_SERVER` empty and history stays local.
 
@@ -416,18 +416,18 @@ Wired in `store/.claude/settings.json`. A hook with no `"async": true` can block
 
 ## Cursor hooks
 
-Cursor talks a different hook protocol (`continue` / `user_message` JSON, its own event names). Thin adapters in `bin/cursor-*.sh` wrap the Claude hooks. Wire them through `store/.cursor/hooks.json` (synced to `~/.cursor/hooks.json` via `sync.conf`).
+Cursor talks a different hook protocol (`continue` / `user_message` JSON, its own event names). Thin adapters in `bin/cursor-*.sh` wrap the Claude hooks. An example wiring is `store/.cursor/hooks.json` — copy or merge into `~/.cursor/hooks.json`, or uncomment `.cursor/hooks.json` in `sync.conf` after you opt in (default is off so a template user's own hooks are not overwritten). Install the herdr Cursor integration for pane agent-state; do not sync `herdr-agent-state.sh`.
 
 | Adapter | Cursor events | What it does |
 |---|---|---|
 | `cursor-session-record.sh` | sessionStart, beforeSubmitPrompt, stop, sessionEnd | Maps into `session-record.sh` so Cursor sessions enter `agent-sessions`. |
-| `cursor-pane-meta.sh` | sessionStart, beforeSubmitPrompt, preToolUse, stop, subagentStop, sessionEnd | Translates the payload and runs `herdr-pane-meta.sh` as `HERDR_META_AGENT=cursor` (Auto/API from `cursor-usage.sh`, not Claude `/usage`). `preToolUse` must print `{"permission":"allow"}`. |
+| `cursor-pane-meta.sh` | sessionStart, beforeSubmitPrompt, preToolUse, stop, subagentStop, sessionEnd | Translates the payload and runs `herdr-pane-meta.sh` as `HERDR_META_AGENT=cursor` (Auto/API from `cursor-usage.sh`, not Claude `/usage`). `preToolUse` always prints `{"permission":"allow"}`, including when meta is missing. |
 | `cursor-geo-guard.sh` | beforeSubmitPrompt | Same geo check; Cursor needs `{"continue":false,"user_message":"..."}` instead of exit 2. |
 | `cursor-plan-resume.sh` | beforeSubmitPrompt | Once per conversation, injects the plan whose `**Herdr space:**` matches this space. |
 | `cursor-awake-hook.sh` | beforeSubmitPrompt, stop, sessionEnd | Sleep lock while the agent works (same as Claude `awake-hook`). |
 | `cursor-limit-guard.sh` | (optional) | Stays quiet: Claude quota text must not enter a Cursor prompt. |
 
-`cursor-usage.sh` is not a Cursor hook entry; the pane meta adapter calls it. `store/.cursor/herdr-agent-state.sh` is the herdr Cursor integration helper.
+`cursor-usage.sh` is not a Cursor hook entry; the pane meta adapter calls it (`--cached` on prompt/tool events, network refresh on stop).
 
 ## Skills
 

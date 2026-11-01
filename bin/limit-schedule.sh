@@ -76,24 +76,38 @@ limit_wake_epoch() {
 }
 
 limit_wake_delay_seconds() {
-  local wake now f pad week_ts
-  limit_sanitize_usage_metadata
+  local wake now f pad week_ts week_pct thresh
   now=$(date +%s)
   pad=${LIMIT_WAKE_PAD_SEC:-300}
+  thresh=${LIMIT_WEEK_HIT_PCT:-90}
   f="$(limits_file)"
+  week_ts=0
+  week_pct=0
   if [[ -r "$f" ]]; then
     # shellcheck disable=SC1090
     . "$f"
     week_ts=${SHARED_WEEK_RESET_TS:-0}
-    if [[ "$week_ts" =~ ^[0-9]+$ ]] && ((week_ts > 0)); then
-      if ((now >= week_ts + pad)); then
-        printf '%s' 30
-        return 0
-      fi
-      if ((now >= week_ts)); then
-        printf '%s' "$((week_ts + pad - now))"
-        return 0
-      fi
+    week_pct=${SHARED_WEEK_PCT:-0}
+    case "$week_pct" in ''|*[!0-9]*) week_pct=0 ;; esac
+  fi
+  # Sanitize may zero WEEK_PCT when WEEK_RESET_TS is past; read the hit signal first.
+  limit_sanitize_usage_metadata
+  if [[ -r "$f" ]]; then
+    # shellcheck disable=SC1090
+    . "$f"
+    week_ts=${SHARED_WEEK_RESET_TS:-0}
+  fi
+  # Only short-circuit on a past weekly reset when the week limit was what hit.
+  # A stale WEEK_RESET_TS after the weekly reset must not fire a 30s wake while
+  # the session limit is still active.
+  if [[ "$week_ts" =~ ^[0-9]+$ ]] && ((week_ts > 0)) && ((week_pct >= thresh)); then
+    if ((now >= week_ts + pad)); then
+      printf '%s' 30
+      return 0
+    fi
+    if ((now >= week_ts)); then
+      printf '%s' "$((week_ts + pad - now))"
+      return 0
     fi
   fi
   wake=$(limit_wake_epoch) || return 1

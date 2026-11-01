@@ -311,7 +311,7 @@ project-develop
 
 ## Что синхронизируется
 
-Из `sync.conf`: правила, `settings.json`, хуки, скиллы и планы в `~/.claude`; `hooks.json` и `herdr-agent-state.sh` в `~/.cursor`; `config.toml` herdr. `settings.local.json` остаётся на этой машине. Память проекта включается отдельно: раскомментируйте одну строку `.claude/projects/<project-key>/memory` в `sync.conf`. В шаблоне эта строка закомментирована, так что память не синхронизируется, пока вы этого не сделаете.
+Из `sync.conf`: правила, `settings.json`, хуки, скиллы и планы в `~/.claude`; `config.toml` herdr. `settings.local.json` остаётся на этой машине. Память проекта включается отдельно: раскомментируйте одну строку `.claude/projects/<project-key>/memory` в `sync.conf`. `~/.cursor/hooks.json` — тот же opt-in (по умолчанию закомментирован, чтобы не затереть чужие хуки Cursor); пример в `store/.cursor/hooks.json`. `herdr-agent-state.sh` не синхронизируйте — ставьте интеграцию herdr для Cursor.
 
 `history-sync` при заданном `SYNC_SERVER` отправляет каждый `*.jsonl` из `HISTORY_SRC`. По умолчанию это `~/.claude/projects`: транскрипты всех проектов Claude на этой машине, не только этого. Ограничьте каталогом одного проекта через `HISTORY_SRC` или оставьте `SYNC_SERVER` пустым — тогда история остаётся локальной.
 
@@ -408,18 +408,18 @@ bin/check.sh                            agent-sync-check: поднялся ли 
 
 ## Хуки Cursor
 
-У Cursor другой протокол хуков (JSON `continue` / `user_message`, свои имена событий). Тонкие адаптеры `bin/cursor-*.sh` оборачивают хуки Claude. Подключение — через `store/.cursor/hooks.json` (в `sync.conf` → `~/.cursor/hooks.json`).
+У Cursor другой протокол хуков (JSON `continue` / `user_message`, свои имена событий). Тонкие адаптеры `bin/cursor-*.sh` оборачивают хуки Claude. Пример wiring — `store/.cursor/hooks.json`: скопируйте или смержите в `~/.cursor/hooks.json`, либо раскомментируйте `.cursor/hooks.json` в `sync.conf` после opt-in (по умолчанию выключено). Интеграцию herdr для Cursor ставьте отдельно; `herdr-agent-state.sh` не синхронизируйте.
 
 | Адаптер | События Cursor | Что делает |
 |---|---|---|
 | `cursor-session-record.sh` | sessionStart, beforeSubmitPrompt, stop, sessionEnd | Маппит в `session-record.sh`, чтобы сессии Cursor попадали в `agent-sessions`. |
-| `cursor-pane-meta.sh` | sessionStart, beforeSubmitPrompt, preToolUse, stop, subagentStop, sessionEnd | Переводит payload и запускает `herdr-pane-meta.sh` как `HERDR_META_AGENT=cursor` (Auto/API из `cursor-usage.sh`, не Claude `/usage`). `preToolUse` обязан печатать `{"permission":"allow"}`. |
+| `cursor-pane-meta.sh` | sessionStart, beforeSubmitPrompt, preToolUse, stop, subagentStop, sessionEnd | Переводит payload и запускает `herdr-pane-meta.sh` как `HERDR_META_AGENT=cursor` (Auto/API из `cursor-usage.sh`, не Claude `/usage`). `preToolUse` всегда печатает `{"permission":"allow"}`, в том числе если meta отсутствует. |
 | `cursor-geo-guard.sh` | beforeSubmitPrompt | Та же geo-проверка; Cursor ждёт `{"continue":false,"user_message":"..."}` вместо exit 2. |
 | `cursor-plan-resume.sh` | beforeSubmitPrompt | Один раз на conversation подставляет план с `**Herdr space:**` этой space. |
 | `cursor-awake-hook.sh` | beforeSubmitPrompt, stop, sessionEnd | Sleep-lock, пока агент работает (как Claude `awake-hook`). |
 | `cursor-limit-guard.sh` | (опционально) | Молчит: текст квоты Claude не должен попадать в промпт Cursor. |
 
-`cursor-usage.sh` — не запись в hooks.json; его вызывает адаптер метаданных. `store/.cursor/herdr-agent-state.sh` — интеграция herdr для Cursor.
+`cursor-usage.sh` — не запись в hooks.json; его вызывает адаптер метаданных (`--cached` на prompt/tool, сеть на stop).
 
 ## Скиллы
 

@@ -415,11 +415,11 @@ t_brief_cursor() {
   check "cursor: StrReplace → files"      grep -q 'score.ts'               <<<"$out"
   check "cursor: Shell → commands"        grep -q 'npm test'               <<<"$out"
 
-  local rc; "$CLI" pickup "$sid" --print >/tmp/pickup-cur-out 2>/tmp/pickup-cur-err; rc=$?
+  local rc; "$CLI" pickup "$sid" --print >"$TMP/pickup-cur-out" 2>"$TMP/pickup-cur-err"; rc=$?
   check "cursor pickup --print does not refuse" test "$rc" -eq 0
-  check "cursor pickup includes the digest" grep -q 'fix scoring on cursor' /tmp/pickup-cur-out
+  check "cursor pickup includes the digest" grep -q 'fix scoring on cursor' "$TMP/pickup-cur-out"
   check "cursor pickup hints at cursor transcript" \
-    grep -q 'agent-transcripts' /tmp/pickup-cur-out
+    grep -q 'agent-transcripts' "$TMP/pickup-cur-out"
 }
 
 # --- 19c. brief/pickup from OpenCode SQLite ---------------------------------

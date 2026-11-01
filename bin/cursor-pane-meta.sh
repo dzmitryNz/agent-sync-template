@@ -5,12 +5,25 @@
 # preToolUse must answer with permission JSON; an empty stdout blocks the tool.
 set -u
 
+payload="$(cat 2>/dev/null || true)"
+
+# Detect the event even without jq so preToolUse always gets an allow reply.
+event=""
+if command -v jq >/dev/null 2>&1 && [ -n "$payload" ]; then
+  event="$(jq -r '.hook_event_name // ""' <<<"$payload" 2>/dev/null || true)"
+elif [ -n "$payload" ]; then
+  event="$(printf '%s' "$payload" | sed -n 's/.*"hook_event_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+fi
+
+if [ "$event" = preToolUse ]; then
+  # Every exit path (missing jq/meta, bad translate, early return) must print allow.
+  trap 'printf "%s\n" "{\"permission\":\"allow\"}"' EXIT
+fi
+
 command -v jq >/dev/null 2>&1 || exit 0
-
-payload="$(cat 2>/dev/null)"
 [ -n "$payload" ] || exit 0
+[ -n "$event" ] || exit 0
 
-event="$(jq -r '.hook_event_name // ""' <<<"$payload" 2>/dev/null)"
 case "$event" in
   sessionStart)       mapped=SessionStart ;;
   beforeSubmitPrompt) mapped=UserPromptSubmit ;;
@@ -39,7 +52,4 @@ translated="$(jq -c --arg e "$mapped" '
 printf '%s\n' "$translated" \
   | HERDR_META_SOURCE=cursor-hook HERDR_META_AGENT=cursor "$meta"
 
-if [ "$event" = preToolUse ]; then
-  printf '%s\n' '{"permission":"allow"}'
-fi
 exit 0
