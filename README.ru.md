@@ -311,7 +311,7 @@ project-develop
 
 ## Что синхронизируется
 
-Из `sync.conf`: правила, `settings.json`, хуки, скиллы и планы в `~/.claude`; `config.toml` herdr. `settings.local.json` остаётся на этой машине. Память проекта включается отдельно: раскомментируйте одну строку `.claude/projects/<project-key>/memory` в `sync.conf`. В шаблоне эта строка закомментирована, так что память не синхронизируется, пока вы этого не сделаете.
+Из `sync.conf`: правила, `settings.json`, хуки, скиллы и планы в `~/.claude`; `config.toml` herdr. `settings.local.json` остаётся на этой машине. Память проекта включается отдельно: раскомментируйте одну строку `.claude/projects/<project-key>/memory` в `sync.conf`. `~/.cursor/hooks.json` — тот же opt-in (по умолчанию закомментирован, чтобы не затереть чужие хуки Cursor); пример в `store/.cursor/hooks.json`. `herdr-agent-state.sh` не синхронизируйте — ставьте интеграцию herdr для Cursor.
 
 `history-sync` при заданном `SYNC_SERVER` отправляет каждый `*.jsonl` из `HISTORY_SRC`. По умолчанию это `~/.claude/projects`: транскрипты всех проектов Claude на этой машине, не только этого. Ограничьте каталогом одного проекта через `HISTORY_SRC` или оставьте `SYNC_SERVER` пустым — тогда история остаётся локальной.
 
@@ -342,10 +342,12 @@ bin/check.sh                            agent-sync-check: поднялся ли 
 | `project-develop [--dry-run] [repo...]` | fast-forward основных чекаутов на `origin/$PROJECT_BASE_BRANCH` |
 | `pr-diff <repo> <n> [файл...]` | diff PR по частям |
 | `history-sync` | rsync транскриптов; молчит, если `SYNC_SERVER` пуст |
-| `agent-sessions list [текст] [--on ДАТА] [--since D --until D] [--host H] [--page N] [--all]` | |
-| `agent-sessions resume <id\|n> [--print]` | |
-| `agent-sessions brief <id>` | |
-| `agent-sessions pickup <id\|n> [--agent claude\|cursor] [--print]` | новая сессия с выжимкой |
+| `agent-sessions list [текст] [--on ДАТА] [--since D --until D] [--host H] [--agent A] [--page N] [--all]` | `--agent`: claude, cursor, opencode, mimo |
+| `agent-sessions resume <id\|n> [--print]` | нативный resume у каждого агента |
+| `agent-sessions brief <id>` | выжимка через нормализатор по форме записи (jsonl или sqlite) |
+| `agent-sessions pickup <id\|n> [--agent claude\|cursor\|opencode\|mimo] [--print]` | новая сессия с выжимкой; `--agent` — куда открыть |
+| `registry-backfill.sh` | Claude jsonl + OpenCode/Mimo SQLite в реестр сессий (`transcript: sqlite:<db>`; сами БД локальные) |
+| `session-transcript-normalize.sh` | для `brief`/`pickup`: форма записи → промпты / правки / shell |
 | `register-me [--id <session-id>] "над чем работаю"` | записать сессию, стартовавшую до хука |
 | `herdr-spaces [list [host...]]` / `me` / `send <host> <label> [текст\|--file путь]` | |
 | `herdr-pane-reply <pane_id>` | последний блок `[… RESULT]`; код 1, если его нет |
@@ -393,7 +395,7 @@ bin/check.sh                            agent-sync-check: поднялся ли 
 | `herdr-pane-meta.sh` | SessionStart, UserPromptSubmit, PreToolUse, Notification, Stop, SessionEnd | нет | Сайдбар: ветка на вкладке, агент и лимит снизу, стрелки темпа, батарея `AC`/`B`, свежий процент уходит на остальные панели Claude. |
 | `session-record.sh` | SessionStart, UserPromptSubmit, Stop, SessionEnd, PostToolUse | нет | Реестр для `agent-sessions`. |
 | `awake-hook.sh` | UserPromptSubmit, Notification, Stop, SessionEnd | нет | На батарее держит блокировку сна, пока агент работает (`keep-awake.sh`: `systemd-inhibit` на Linux, `caffeinate` на macOS). |
-| `limit-wake-hook.sh` | Notification, Stop | нет | После сброса лимита просит панель продолжить (таймер `systemd-run` на Linux, одноразовый агент launchd на macOS). Вручную: `--run --target PANE --message TEXT`. |
+| `limit-wake-hook.sh` | Notification, Stop | нет | После сброса лимита просит панель продолжить. Linux — через `limit-schedule.sh` (`systemd-run`); macOS — одноразовый launchd. На `--run` сначала сливает очередь `limit-deferred-handoff` для этой панели, если есть запись. |
 | `role-clear.sh` | Stop | нет | Шлёт `/clear` панели постоянной роли после законченного запроса. Пока не отправлен `[TAG RESULT]`, оставляет маркер. |
 | `project-block-primary-checkout-write.sh` | PreToolUse Edit, Write, NotebookEdit | да | Блокирует запись в основной чекаут под `PROJECT_ROOT`. Работайте в worktree. |
 | `block-dangerous-rm.sh` | PreToolUse Bash | да | Блокирует `rm -rf` по `/`, `$HOME` или glob, который накрывает всё. |
@@ -401,6 +403,23 @@ bin/check.sh                            agent-sync-check: поднялся ли 
 | `project-worktree-via-wt-new.sh` | PreToolUse Bash и EnterWorktree | да | Блокирует голый `git worktree add\|move` под `PROJECT_ROOT`. Используйте `wt-new`. |
 
 `limit-pace.sh` — не хук. Его вызывает сайдбар. Прогноз = использовано% × окно / прошедшее время. Окно сессии — 5 часов, недели — 7 дней. Время сброса без зоны берётся из `LIMIT_PACE_TZ`, а если она пуста — из `LIMIT_PACE_GAP_HOURS`. ↑ ниже 60% (запас останется), без стрелки 60–100%, ↓ 100–130%, ↓↓ выше 130% или лимит уже 100%. Первые 10% окна без стрелки, кроме лимита 100%. Нет даты сброса — нет стрелки. Шрифт herdr не рисует эмодзи, поэтому метки — `↑` `↓` `↓↓`.
+
+`limit-schedule.sh` и `limit-deferred-handoff.sh` лежат в `bin/`. Первый — общий таймер на Linux; второй ставит herdr-handoff в очередь до сброса лимита и сливает её из `limit-wake-hook --run`.
+
+## Хуки Cursor
+
+У Cursor другой протокол хуков (JSON `continue` / `user_message`, свои имена событий). Тонкие адаптеры `bin/cursor-*.sh` оборачивают хуки Claude. Пример wiring — `store/.cursor/hooks.json`: скопируйте или смержите в `~/.cursor/hooks.json`, либо раскомментируйте `.cursor/hooks.json` в `sync.conf` после opt-in (по умолчанию выключено). Интеграцию herdr для Cursor ставьте отдельно; `herdr-agent-state.sh` не синхронизируйте.
+
+| Адаптер | События Cursor | Что делает |
+|---|---|---|
+| `cursor-session-record.sh` | sessionStart, beforeSubmitPrompt, stop, sessionEnd | Маппит в `session-record.sh`, чтобы сессии Cursor попадали в `agent-sessions`. |
+| `cursor-pane-meta.sh` | sessionStart, beforeSubmitPrompt, preToolUse, stop, subagentStop, sessionEnd | Переводит payload и запускает `herdr-pane-meta.sh` как `HERDR_META_AGENT=cursor` (Auto/API из `cursor-usage.sh`, не Claude `/usage`). `preToolUse` всегда печатает `{"permission":"allow"}`, в том числе если meta отсутствует. |
+| `cursor-geo-guard.sh` | beforeSubmitPrompt | Та же geo-проверка; Cursor ждёт `{"continue":false,"user_message":"..."}` вместо exit 2. |
+| `cursor-plan-resume.sh` | beforeSubmitPrompt | Один раз на conversation подставляет план с `**Herdr space:**` этой space. |
+| `cursor-awake-hook.sh` | beforeSubmitPrompt, stop, sessionEnd | Sleep-lock, пока агент работает (как Claude `awake-hook`). |
+| `cursor-limit-guard.sh` | (опционально) | Молчит: текст квоты Claude не должен попадать в промпт Cursor. |
+
+`cursor-usage.sh` — не запись в hooks.json; его вызывает адаптер метаданных (`--cached` на prompt/tool, сеть на stop).
 
 ## Скиллы
 

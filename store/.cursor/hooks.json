@@ -1,0 +1,74 @@
+{
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "bash \"$HOME/.cursor/herdr-agent-state.sh\" session"
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-session-record.sh\""
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-pane-meta.sh\""
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-geo-guard.sh\"",
+        "failClosed": true,
+        "timeout": 20
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-session-record.sh\""
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-plan-resume.sh\""
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-awake-hook.sh\""
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-pane-meta.sh\""
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-pane-meta.sh\""
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "\"$HOME/.claude/hooks/project-worktree-via-wt-new.sh\""
+      }
+    ],
+    "stop": [
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-session-record.sh\""
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-awake-hook.sh\""
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-pane-meta.sh\"",
+        "timeout": 30
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-pane-meta.sh\"",
+        "timeout": 30
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-session-record.sh\""
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-awake-hook.sh\""
+      },
+      {
+        "command": "\"$HOME/.agent-sync/bin/cursor-pane-meta.sh\""
+      }
+    ]
+  },
+  "version": 1
+}

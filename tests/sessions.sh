@@ -389,6 +389,150 @@ t_brief_missing() {
   check "says it was not found" test "$rc" -ne 0
 }
 
+# --- 19b. brief/pickup understand Cursor jsonl (.role, Shell, StrReplace) ----
+t_brief_cursor() {
+  local sid=cur-brief-1
+  local dir="$HOME/.cursor/projects/home-me-proj/agent-transcripts/$sid"
+  # pickup needs a live cwd; record home /home/me → local_cwd yields $HOME/proj
+  mkdir -p "$dir" "$SESSIONS_DIR/$SESSIONS_HOST" "$HOME/proj"
+  local f="$dir/$sid.jsonl"
+  jq -nc '{role:"user", message:{content:[{type:"text",
+    text:"<timestamp>t</timestamp>\n<user_query>\nfix scoring on cursor\n</user_query>"}]}}' > "$f"
+  jq -nc '{role:"assistant", message:{content:[
+      {type:"tool_use", name:"StrReplace", input:{path:"/home/me/proj/src/score.ts"}},
+      {type:"tool_use", name:"Shell", input:{command:"npm test -- score"}}]}}' >> "$f"
+  jq -nc '{role:"user", message:{content:[{type:"text",
+    text:"<user_query>\nnow add a boundary test\n</user_query>"}]}}' >> "$f"
+  jq -nc --arg id "$sid" --arg tr "$f" \
+    '{session_id:$id, agent:"cursor", host:"machine-a", home:"/home/me",
+      cwd:"/home/me/proj", transcript:$tr, started_at:"2026-01-01T00:00:00Z",
+      last_seen:"2026-01-01T01:00:00Z", first_prompt:"fix", last_prompt:"test"}' \
+    > "$(rec "$sid")"
+
+  out="$("$CLI" brief "$sid" 2>&1)"
+  check "cursor: prompt from user_query"  grep -q 'fix scoring on cursor' <<<"$out"
+  check "cursor: last request"            grep -q 'boundary test'          <<<"$out"
+  check "cursor: StrReplace → files"      grep -q 'score.ts'               <<<"$out"
+  check "cursor: Shell → commands"        grep -q 'npm test'               <<<"$out"
+
+  local rc; "$CLI" pickup "$sid" --print >"$TMP/pickup-cur-out" 2>"$TMP/pickup-cur-err"; rc=$?
+  check "cursor pickup --print does not refuse" test "$rc" -eq 0
+  check "cursor pickup includes the digest" grep -q 'fix scoring on cursor' "$TMP/pickup-cur-out"
+  check "cursor pickup hints at cursor transcript" \
+    grep -q 'agent-transcripts' "$TMP/pickup-cur-out"
+}
+
+# --- 19c. brief/pickup from OpenCode SQLite ---------------------------------
+t_brief_opencode() {
+  command -v sqlite3 >/dev/null 2>&1 || { ok "sqlite3 missing — skip"; return 0; }
+  local sid=ses_test_opencode_1
+  local db="$HOME/.local/share/opencode/opencode.db"
+  mkdir -p "$(dirname "$db")" "$HOME/proj" "$SESSIONS_DIR/$SESSIONS_HOST"
+  rm -f "$db"
+  sqlite3 "$db" "
+    CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT, title TEXT,
+      time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+    CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+      seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+    INSERT INTO session_v2 VALUES ('$sid','/home/me/proj','t',1,2,NULL);
+    INSERT INTO session_message VALUES ('m1','$sid','user',1,1,1,
+      json('{\"text\":\"fix the gateway config\"}'));
+    INSERT INTO session_message VALUES ('m2','$sid','assistant',2,2,2,
+      json('{\"content\":[{\"type\":\"tool\",\"name\":\"shell\",\"state\":{\"input\":{\"command\":\"uptime\"}}},{\"type\":\"tool\",\"name\":\"write\",\"state\":{\"input\":{\"path\":\"/tmp/fix.sh\"}}}]}'));
+    INSERT INTO session_message VALUES ('m3','$sid','user',3,3,3,
+      json('{\"text\":\"check the homepage\"}'));
+  "
+  jq -nc --arg id "$sid" --arg tr "sqlite:$db" \
+    '{session_id:$id, agent:"opencode", host:"machine-a", home:"/home/me",
+      cwd:"/home/me/proj", transcript:$tr, started_at:"2026-01-01T00:00:00Z",
+      last_seen:"2026-01-01T01:00:00Z", first_prompt:"fix", last_prompt:"check"}' \
+    > "$(rec "$sid")"
+
+  out="$("$CLI" brief "$sid" 2>&1)"
+  check "opencode: user prompt"   grep -q 'fix the gateway' <<<"$out"
+  check "opencode: shell"         grep -q 'uptime' <<<"$out"
+  check "opencode: write → file"  grep -q '/tmp/fix.sh' <<<"$out"
+  local rc; "$CLI" pickup "$sid" --print >/dev/null 2>&1; rc=$?
+  check "opencode pickup --print" test "$rc" -eq 0
+}
+
+# --- 19d. brief from Mimo SQLite (message+part) -----------------------------
+t_brief_mimo() {
+  command -v sqlite3 >/dev/null 2>&1 || { ok "sqlite3 missing — skip"; return 0; }
+  local sid=ses_test_mimo_1
+  local db="$HOME/.local/share/mimocode/mimocode.db"
+  mkdir -p "$(dirname "$db")" "$HOME/proj" "$SESSIONS_DIR/$SESSIONS_HOST"
+  rm -f "$db"
+  sqlite3 "$db" "
+    CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, title TEXT,
+      version TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+    CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, agent_id TEXT,
+      time_created INTEGER, time_updated INTEGER, data TEXT);
+    CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+      time_created INTEGER, time_updated INTEGER, data TEXT);
+    INSERT INTO session VALUES ('$sid','p','/home/me/proj','dst', '1',1,2,NULL);
+    INSERT INTO message VALUES ('mu','$sid','main',1,1, json('{\"role\":\"user\"}'));
+    INSERT INTO part VALUES ('pu','mu','$sid',1,1, json('{\"type\":\"text\",\"text\":\"explain the DST pickup bug\"}'));
+    INSERT INTO message VALUES ('ma','$sid','main',2,2, json('{\"role\":\"assistant\"}'));
+    INSERT INTO part VALUES ('pe','ma','$sid',2,2,
+      json('{\"type\":\"tool\",\"tool\":\"Edit\",\"state\":{\"input\":{\"file_path\":\"/home/me/proj/a.ts\"}}}'));
+    INSERT INTO part VALUES ('pb','ma','$sid',3,3,
+      json('{\"type\":\"tool\",\"tool\":\"Bash\",\"state\":{\"input\":{\"command\":\"npm test\"}}}'));
+  "
+  jq -nc --arg id "$sid" --arg tr "sqlite:$db" \
+    '{session_id:$id, agent:"mimo", host:"machine-a", home:"/home/me",
+      cwd:"/home/me/proj", transcript:$tr, started_at:"2026-01-01T00:00:00Z",
+      last_seen:"2026-01-01T01:00:00Z", first_prompt:"DST", last_prompt:"DST"}' \
+    > "$(rec "$sid")"
+
+  out="$("$CLI" brief "$sid" 2>&1)"
+  check "mimo: user prompt" grep -q 'DST pickup' <<<"$out"
+  check "mimo: Edit → file" grep -q 'a.ts' <<<"$out"
+  check "mimo: Bash"        grep -q 'npm test' <<<"$out"
+}
+
+# --- 19e. backfill puts opencode/mimo into the registry ---------------------
+t_backfill_sqlite() {
+  command -v sqlite3 >/dev/null 2>&1 || { ok "sqlite3 missing — skip"; return 0; }
+  local BACKFILL="$ROOT/bin/registry-backfill.sh"
+  local now_ms=$(( $(date -u +%s) * 1000 ))
+  local oc="$HOME/.local/share/opencode/opencode.db"
+  local mi="$HOME/.local/share/mimocode/mimocode.db"
+  mkdir -p "$(dirname "$oc")" "$(dirname "$mi")"
+  rm -f "$oc" "$mi"
+  sqlite3 "$oc" "
+    CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT, title TEXT,
+      time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+    CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+      seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+    INSERT INTO session_v2 VALUES ('ses_bf_oc','/home/me/proj','x',$now_ms,$now_ms,NULL);
+    INSERT INTO session_message VALUES ('1','ses_bf_oc','user',1,1,1, json('{\"text\":\"opencode backfill probe\"}'));
+  "
+  sqlite3 "$mi" "
+    CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, title TEXT,
+      version TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+    CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, agent_id TEXT,
+      time_created INTEGER, time_updated INTEGER, data TEXT);
+    CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+      time_created INTEGER, time_updated INTEGER, data TEXT);
+    INSERT INTO session VALUES ('ses_bf_mi','p','/home/me/proj','real work','1',$now_ms,$now_ms,NULL);
+    INSERT INTO message VALUES ('m','ses_bf_mi','main',1,1, json('{\"role\":\"user\"}'));
+    INSERT INTO part VALUES ('p','m','ses_bf_mi',1,1, json('{\"type\":\"text\",\"text\":\"mimo backfill probe\"}'));
+    INSERT INTO session VALUES ('ses_bf_skip','p','/home/me/proj','Claude Code session','1',$now_ms,$now_ms,NULL);
+    INSERT INTO message VALUES ('ms','ses_bf_skip','main',1,1, json('{\"role\":\"user\"}'));
+    INSERT INTO part VALUES ('ps','ms','ses_bf_skip',1,1, json('{\"type\":\"text\",\"text\":\"imported\"}'));
+  "
+  OPENCODE_DB="$oc" MIMO_DB="$mi" SESSIONS_DIR="$SESSIONS_DIR" SESSIONS_HOST="$SESSIONS_HOST" \
+    PROJECTS_DIR="$HOME/.claude/projects" "$BACKFILL" >/dev/null
+  check "backfill: opencode in registry" test -f "$(rec ses_bf_oc)"
+  check "backfill: agent=opencode" test "$(field ses_bf_oc .agent)" = opencode
+  check "backfill: mimo in registry" test -f "$(rec ses_bf_mi)"
+  check "backfill: agent=mimo" test "$(field ses_bf_mi .agent)" = mimo
+  check "backfill: Claude Code import skipped" test ! -f "$(rec ses_bf_skip)"
+  out="$("$CLI" list --agent opencode 2>&1)"
+  check "list --agent opencode" grep -q 'opencode backfill' <<<"$out"
+}
+
 # The description is cut by characters: GNU cut -c cuts bytes and can split a multibyte character.
 t_prompt_trim_utf8() {
   local long; long="$(printf 'é%.0s' {1..150})"
@@ -538,6 +682,10 @@ t_list_footer() {
 
 run_test "brief gives a digest of the transcript"    t_brief
 run_test "brief of a non-existent session"       t_brief_missing
+run_test "brief/pickup for Cursor jsonl"         t_brief_cursor
+run_test "brief/pickup for OpenCode sqlite"      t_brief_opencode
+run_test "brief for Mimo sqlite"                 t_brief_mimo
+run_test "backfill OpenCode/Mimo into registry"  t_backfill_sqlite
 run_test "the plan goes into the session record"        t_plan_linked
 run_test "a plan from docs/plans too"              t_plan_in_repo
 run_test "ordinary files do not count as a plan"    t_plan_ignores_other_files
